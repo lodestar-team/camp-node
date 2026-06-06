@@ -1,0 +1,8 @@
+{
+  "name": "amp-test-multi-version",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@edgeandnode/amp": "workspace:*"
+  }
+}

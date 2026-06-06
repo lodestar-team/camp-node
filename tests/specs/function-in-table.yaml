@@ -1,0 +1,31 @@
+- name: restore_eth_firehose
+  restore: _/eth_firehose@0.0.0
+
+- name: register_function_in_table
+  dataset: function_in_table
+  tag: "0.0.0"
+
+- name: dump_function_in_table
+  dataset: freecandylabs/function_in_table@0.0.0
+  end: 15000000
+
+- name: query_function_in_table_blocks
+  query: SELECT block_num, miner_tagged, hash FROM "freecandylabs/function_in_table".blocks_with_suffix LIMIT 1
+  results: |
+    [
+      {"block_num":15000000,"hash":"9a71a95be3fe957457b11817587e5af4c7e24836d5b383c430ff25b9286a457f","miner_tagged":"ea674fdde714fd979de3edf0f56aa9716b898ec8_processed"}
+    ]
+
+- name: query_function_in_table_direct_function_call
+  query: SELECT "freecandylabs/function_in_table".addSuffix(miner_tagged) as double_tagged FROM "freecandylabs/function_in_table".blocks_with_suffix LIMIT 1
+  results: |
+    [
+      {"double_tagged":"ea674fdde714fd979de3edf0f56aa9716b898ec8_processed_processed"}
+    ]
+
+- name: query_function_in_table_fqn_function_call
+  query: SELECT "freecandylabs/function_in_table@0.0.0".addSuffix(miner_tagged) as triple_tagged FROM "freecandylabs/function_in_table".blocks_with_suffix LIMIT 1
+  results: |
+    [
+      {"triple_tagged":"ea674fdde714fd979de3edf0f56aa9716b898ec8_processed_processed"}
+    ]

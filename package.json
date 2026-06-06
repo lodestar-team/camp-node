@@ -1,0 +1,27 @@
+{
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.18.2+sha512.9fb969fa749b3ade6035e0f109f0b8a60b5d08a1a87fdf72e337da90dcc93336e2280ca4e44f2358a649b83c17959e9993e777c2080879f3801e6f0d999ad3dd",
+  "scripts": {
+    "build": "tsc -b tsconfig.build.json && pnpm --recursive --parallel build",
+    "check": "tsc -b tsconfig.json",
+    "lint": "eslint .",
+    "format": "pnpm lint --fix",
+    "test": "vitest -c vitest.config.ts"
+  },
+  "devDependencies": {
+    "@edgeandnode/amp": "workspace:*",
+    "@effect/eslint-plugin": "^0.3.2",
+    "@effect/language-service": "^0.56.0",
+    "@eslint/js": "^9.39.1",
+    "eslint": "^9.39.1",
+    "eslint-import-resolver-typescript": "^4.4.4",
+    "eslint-plugin-import-x": "^4.16.1",
+    "eslint-plugin-simple-import-sort": "^12.1.1",
+    "eslint-plugin-sort-destructure-keys": "^2.0.0",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.47.0",
+    "vitest": "^4.0.12"
+  }
+}

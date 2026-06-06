@@ -1,0 +1,202 @@
+//! Rust client library for Amp
+//!
+//! This crate provides a high-level client for querying blockchain data from Amp servers.
+//!
+//! # Quick Start
+//!
+//! ## Simple Query
+//!
+//! ```rust,ignore
+//! use amp_client::AmpClient;
+//! use futures::StreamExt;
+//!
+//! // Connect to server
+//! let mut client = AmpClient::from_endpoint("http://localhost:1602").await?;
+//!
+//! // Execute non-streaming query
+//! let mut result = client.query("SELECT * FROM eth.blocks LIMIT 10").await?;
+//! while let Some(batch) = result.next().await {
+//!     // Process batch
+//! }
+//! ```
+//!
+//! ## Protocol Stream (Stateless Reorg Detection)
+//!
+//! ```rust,ignore
+//! use amp_client::{AmpClient, ProtocolMessage};
+//! use futures::StreamExt;
+//!
+//! let client = AmpClient::from_endpoint("http://localhost:1602").await?;
+//!
+//! // Create protocol stream (default - stateless reorg detection)
+//! let mut stream = client
+//!     .stream("SELECT * FROM eth.logs WHERE address = '0x...'")
+//!     .await?;
+//!
+//! while let Some(msg) = stream.next().await {
+//!     match msg? {
+//!         ProtocolMessage::Data { batch, ranges } => {
+//!             // Process new data
+//!             println!("Received batch covering blocks: {:?}", ranges);
+//!         }
+//!         ProtocolMessage::Reorg { previous, incoming, invalidation } => {
+//!             // Handle reorg (invalidate data in reorg'd ranges)
+//!             println!("Reorg detected! Invalidation: {:?}", invalidation);
+//!         }
+//!         ProtocolMessage::Watermark { ranges } => {
+//!             // Watermark (ranges complete)
+//!             println!("Watermark reached: {:?}", ranges);
+//!         }
+//!     }
+//! }
+//! ```
+//!
+//! ## Transactional Stream (Stateful)
+//!
+//! ```rust,ignore
+//! use amp_client::{AmpClient, InMemoryStateStore, TransactionEvent};
+//! use futures::StreamExt;
+//!
+//! let client = AmpClient::from_endpoint("http://localhost:1602").await?;
+//!
+//! // Create transactional stream with state persistence
+//! let mut stream = client
+//!     .stream("SELECT * FROM eth.logs WHERE address = '0x...'")
+//!     .transactional(InMemoryStateStore::new(), 128)
+//!     .await?;
+//!
+//! while let Some(result) = stream.next().await {
+//!     let (event, commit) = result?;
+//!
+//!     match event {
+//!         TransactionEvent::Data { batch, id, .. } => {
+//!             // Process and save data with transaction id
+//!             save_data(id, batch).await?;
+//!             commit.await?;
+//!         }
+//!         TransactionEvent::Undo { invalidate, .. } => {
+//!             // Rollback invalidated transaction ids (reorg or rewind)
+//!             delete_data(invalidate).await?;
+//!             commit.await?;
+//!         }
+//!         _ => {}
+//!     }
+//! }
+//! ```
+//!
+//! ## CDC Stream (Change Data Capture)
+//!
+//! ```rust,ignore
+//! use amp_client::{AmpClient, CdcEvent};
+//! use amp_client::store::{open_lmdb_env, LmdbStateStore, LmdbBatchStore};
+//! use futures::StreamExt;
+//!
+//! let env = open_lmdb_env("/path/to/db")?;
+//! let state_store = LmdbStateStore::new(env.clone())?;
+//! let batch_store = LmdbBatchStore::new(env)?;
+//!
+//! let client = AmpClient::from_endpoint("http://localhost:1602").await?;
+//! let mut stream = client
+//!     .stream("SELECT * FROM eth.logs WHERE address = '0x...'")
+//!     .cdc(state_store, batch_store, 128)
+//!     .await?;
+//!
+//! while let Some(result) = stream.next().await {
+//!     let (event, commit) = result?;
+//!
+//!     match event {
+//!         CdcEvent::Insert { batch, .. } => {
+//!             for row in batch.rows() {
+//!                 // Process the row
+//!             }
+//!             commit.await?;
+//!         }
+//!         CdcEvent::Delete { mut batches, .. } => {
+//!             while let Some(result) = batches.next().await {
+//!                 let (id, batch) = result?;
+//!                 for row in batch.rows() {
+//!                     // Process the row
+//!                 }
+//!             }
+//!             commit.await?;
+//!         }
+//!     }
+//! }
+//! ```
+
+use std::{collections::BTreeMap, ops::RangeInclusive};
+
+use alloy::primitives::{BlockHash, BlockNumber};
+
+mod cdc;
+mod client;
+mod decode;
+mod error;
+pub mod store;
+#[cfg(test)]
+mod tests;
+mod transactional;
+mod validation;
+
+pub use cdc::{CdcEvent, CdcStream, DeleteBatchIterator};
+pub use client::{
+    AmpClient, BatchStream, HasSchema, InvalidationRange, Metadata, ProtocolMessage,
+    ProtocolStream, RawStream, ResponseBatch, StreamBuilder,
+};
+pub use error::Error;
+#[cfg(feature = "postgres")]
+pub use store::PostgresStateStore;
+pub use store::{BatchStore, InMemoryBatchStore, InMemoryStateStore, StateSnapshot, StateStore};
+#[cfg(feature = "lmdb")]
+pub use store::{LmdbBatchStore, LmdbStateStore};
+pub use transactional::{Cause, CommitHandle, TransactionEvent, TransactionalStream};
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct BlockRange {
+    pub numbers: RangeInclusive<BlockNumber>,
+    pub network: String,
+    pub hash: BlockHash,
+    pub prev_hash: Option<BlockHash>,
+}
+
+impl BlockRange {
+    #[inline]
+    pub fn start(&self) -> BlockNumber {
+        *self.numbers.start()
+    }
+
+    #[inline]
+    pub fn end(&self) -> BlockNumber {
+        *self.numbers.end()
+    }
+
+    #[inline]
+    fn network_cursor(&self) -> NetworkCursor {
+        NetworkCursor {
+            number: self.end(),
+            hash: self.hash,
+        }
+    }
+}
+
+/// Public interface for resuming a stream from a cursor.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Cursor(BTreeMap<String, NetworkCursor>);
+
+impl Cursor {
+    pub fn from_ranges(ranges: &[BlockRange]) -> Self {
+        let watermark = ranges
+            .iter()
+            .map(|r| (r.network.clone(), r.network_cursor()))
+            .collect();
+        Self(watermark)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct NetworkCursor {
+    /// The segment end block
+    number: BlockNumber,
+    /// The hash associated with the segment end block
+    hash: BlockHash,
+}

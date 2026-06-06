@@ -1,0 +1,32 @@
+[package]
+name = "admin-api"
+version.workspace = true
+license-file.workspace = true
+edition.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+axum.workspace = true
+common = { path = "../../core/common" }
+datafusion.workspace = true
+dataset-store = { path = "../../core/dataset-store" }
+datasets-common = { path = "../../core/datasets-common" }
+datasets-derived = { path = "../../core/datasets-derived" }
+dump = { path = "../../core/dump" }
+eth-beacon-datasets = { path = "../../extractors/eth-beacon" }
+evm-rpc-datasets = { path = "../../extractors/evm-rpc" }
+firehose-datasets = { path = "../../extractors/firehose" }
+futures.workspace = true
+js-runtime = { version = "0.1.0", path = "../../core/js-runtime" }
+metadata-db = { path = "../../core/metadata-db" }
+monitoring = { path = "../../core/monitoring" }
+serde.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
+serde_with = "3.14.0"
+solana-datasets = { path = "../../extractors/solana" }
+thiserror.workspace = true
+tokio.workspace = true
+toml.workspace = true
+tracing.workspace = true
+utoipa = { version = "5.4.0", features = ["axum_extras"], optional = true }
+worker = { path = "../worker" }

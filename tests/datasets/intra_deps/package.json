@@ -1,0 +1,8 @@
+{
+  "name": "amp-test-intra-deps",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@edgeandnode/amp": "workspace:*"
+  }
+}

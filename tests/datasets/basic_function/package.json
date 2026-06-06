@@ -1,0 +1,8 @@
+{
+  "name": "amp-test-basic-function",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@edgeandnode/amp": "workspace:*"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "name": "amp-test-non-incremental",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@edgeandnode/amp": "workspace:*"
+  }
+}

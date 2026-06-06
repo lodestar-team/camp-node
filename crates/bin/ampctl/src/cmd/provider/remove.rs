@@ -1,0 +1,126 @@
+//! Provider removal command.
+//!
+//! Deletes a provider configuration by its name through the admin API by:
+//! 1. Making a DELETE request to admin API `/providers/{name}` endpoint
+//! 2. Handling success (204), not found (404), or error responses
+//!
+//! **Note**: This endpoint removes the provider configuration from storage.
+//! Any datasets using this provider may fail until a new provider is configured.
+//!
+//! # Configuration
+//!
+//! - Admin URL: `--admin-url` flag or `AMP_ADMIN_URL` env var (default: `http://localhost:1610`)
+//! - Logging: `AMP_LOG` env var (`error`, `warn`, `info`, `debug`, `trace`)
+
+use crate::{args::GlobalArgs, client::providers::DeleteError};
+
+/// Command-line arguments for the `provider rm` command.
+#[derive(Debug, clap::Args)]
+pub struct Args {
+    #[command(flatten)]
+    pub global: GlobalArgs,
+
+    /// Provider name to delete
+    #[arg(value_name = "NAME", required = true)]
+    pub name: String,
+}
+
+/// Result of a provider removal operation.
+#[derive(serde::Serialize)]
+struct RemoveResult {
+    name: String,
+}
+
+impl std::fmt::Display for RemoveResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        writeln!(
+            f,
+            "{} Provider deleted successfully",
+            console::style("✓").green().bold()
+        )
+    }
+}
+
+/// Remove a provider from the admin API.
+///
+/// Deletes the provider configuration if it exists.
+///
+/// # Errors
+///
+/// Returns [`Error`] for invalid name, provider not found (404),
+/// API errors (400/500), or network failures.
+#[tracing::instrument(skip_all, fields(admin_url = %global.admin_url, %name))]
+pub async fn run(Args { global, name }: Args) -> Result<(), Error> {
+    tracing::debug!("Deleting provider from admin API");
+
+    delete_provider(&global, &name).await?;
+    let result = RemoveResult { name };
+    global.print(&result).map_err(Error::JsonSerialization)?;
+
+    Ok(())
+}
+
+/// Delete the provider from the admin API.
+///
+/// DELETEs to `/providers/{name}` endpoint using the API client.
+#[tracing::instrument(skip_all)]
+async fn delete_provider(global: &GlobalArgs, name: &str) -> Result<(), Error> {
+    tracing::debug!("Creating API client");
+
+    let client = global.build_client().map_err(Error::ClientBuildError)?;
+
+    client
+        .providers()
+        .delete(name)
+        .await
+        .map_err(|err| match err {
+            DeleteError::InvalidName(source) => Error::InvalidName {
+                error_code: source.error_code,
+                message: source.error_message,
+            },
+            DeleteError::NotFound(source) => Error::NotFound {
+                error_code: source.error_code,
+                message: source.error_message,
+            },
+            DeleteError::StoreError(source) => Error::StoreError {
+                error_code: source.error_code,
+                message: source.error_message,
+            },
+            DeleteError::Network { url, source } => Error::NetworkError { url, source },
+            DeleteError::UnexpectedResponse { status, message } => {
+                Error::UnexpectedResponse { status, message }
+            }
+        })
+}
+
+/// Errors for provider removal operations.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    /// Failed to build client
+    #[error("failed to build admin API client")]
+    ClientBuildError(#[source] crate::args::BuildClientError),
+
+    /// Invalid provider name
+    #[error("invalid provider name: [{error_code}] {message}")]
+    InvalidName { error_code: String, message: String },
+
+    /// Provider not found
+    #[error("provider not found: [{error_code}] {message}")]
+    NotFound { error_code: String, message: String },
+
+    /// Store error
+    #[error("store error: [{error_code}] {message}")]
+    StoreError { error_code: String, message: String },
+
+    /// Network or connection error
+    #[error("network error connecting to {url}")]
+    NetworkError { url: String, source: reqwest::Error },
+
+    /// Unexpected response from API
+    #[error("unexpected response (status {status}): {message}")]
+    UnexpectedResponse { status: u16, message: String },
+
+    /// Failed to serialize result to JSON
+    #[error("failed to serialize result to JSON")]
+    JsonSerialization(#[source] serde_json::Error),
+}

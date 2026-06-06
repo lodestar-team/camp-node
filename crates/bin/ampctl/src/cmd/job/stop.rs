@@ -1,0 +1,98 @@
+//! Job stop command.
+//!
+//! Stops a running job through the admin API by:
+//! 1. Creating a client for the admin API
+//! 2. Using the client's job stop method
+//! 3. Displaying success message
+//!
+//! # Configuration
+//!
+//! - Admin URL: `--admin-url` flag or `AMP_ADMIN_URL` env var (default: `http://localhost:1610`)
+//! - Logging: `AMP_LOG` env var (`error`, `warn`, `info`, `debug`, `trace`)
+
+use monitoring::logging;
+use worker::job::JobId;
+
+use crate::args::GlobalArgs;
+
+/// Command-line arguments for the `jobs stop` command.
+#[derive(Debug, clap::Args)]
+pub struct Args {
+    #[command(flatten)]
+    pub global: GlobalArgs,
+
+    /// The job ID to stop
+    pub id: JobId,
+}
+
+/// Result of a job stop operation.
+#[derive(serde::Serialize)]
+struct StopResult {
+    job_id: JobId,
+}
+
+impl std::fmt::Display for StopResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        writeln!(
+            f,
+            "{} Job {} stop requested",
+            console::style("✓").green().bold(),
+            self.job_id
+        )
+    }
+}
+
+/// Stop a job by requesting it to stop via the admin API.
+///
+/// # Errors
+///
+/// Returns [`Error`] for API errors (400/404/409/500) or network failures.
+#[tracing::instrument(skip_all, fields(admin_url = %global.admin_url, job_id = %id))]
+pub async fn run(Args { global, id }: Args) -> Result<(), Error> {
+    let client = global.build_client().map_err(Error::ClientBuildError)?;
+
+    tracing::debug!("Stopping job via admin API");
+
+    client.jobs().stop(&id).await.map_err(|err| {
+        tracing::error!(error = %err, error_source = logging::error_source(&err), "Failed to stop job");
+        match err {
+            crate::client::jobs::StopError::NotFound(_) => Error::JobNotFound { id },
+            _ => Error::StopJobError(err),
+        }
+    })?;
+    let result = StopResult { job_id: id };
+    global.print(&result).map_err(Error::JsonSerialization)?;
+
+    Ok(())
+}
+
+/// Errors for job stop operations.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    /// Failed to build client
+    #[error("failed to build admin API client")]
+    ClientBuildError(#[source] crate::args::BuildClientError),
+
+    /// Job not found
+    ///
+    /// This occurs when the job ID is valid but no job
+    /// record exists with that ID in the metadata database.
+    #[error("job not found: {id}")]
+    JobNotFound { id: JobId },
+
+    /// Error stopping job via admin API
+    ///
+    /// This occurs when the stop request fails due to:
+    /// - Invalid job ID format
+    /// - Network or connection errors
+    /// - Metadata database errors
+    ///
+    /// Note: The stop operation is idempotent - stopping a job that's already
+    /// in a terminal state (Stopped, Completed, Failed) returns success.
+    #[error("failed to stop job")]
+    StopJobError(#[source] crate::client::jobs::StopError),
+
+    /// Failed to serialize result to JSON
+    #[error("failed to serialize result to JSON")]
+    JsonSerialization(#[source] serde_json::Error),
+}

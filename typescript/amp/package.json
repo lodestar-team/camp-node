@@ -1,0 +1,85 @@
+{
+  "name": "@edgeandnode/amp",
+  "version": "0.0.51",
+  "type": "module",
+  "license": "BUSL-1.1",
+  "description": "Build and manage blockchain datasets.",
+  "homepage": "https://www.edgeandnode.com/amp-dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/edgeandnode/amp",
+    "directory": "typescript/amp"
+  },
+  "bin": {
+    "amp": "./src/cli/dev.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts",
+    "./cli/*": null,
+    "./internal/*": null,
+    "./*/index": null
+  },
+  "files": [
+    "src/**/*.ts",
+    "dist/**/*.js",
+    "dist/**/*.js.map",
+    "dist/**/*.d.ts",
+    "dist/**/*.d.ts.map",
+    "dist/studio/dist/**/*"
+  ],
+  "scripts": {
+    "build": "tsc -b --force tsconfig.build.json",
+    "build:studio": "cd ../studio && pnpm run build",
+    "copy-studio-dist": "tsx scripts/copy-studio-dist.ts",
+    "prepare-studio": "pnpm run build:studio && pnpm run copy-studio-dist",
+    "prepublish": "rm -rf dist && pnpm run build && pnpm run prepare-studio",
+    "amp": "amp"
+  },
+  "publishConfig": {
+    "bin": {
+      "amp": "./dist/cli/main.js"
+    },
+    "exports": {
+      ".": "./dist/index.js",
+      "./*": "./dist/*.js",
+      "./cli/*": null,
+      "./internal/*": null,
+      "./*/index": null
+    }
+  },
+  "dependencies": {
+    "@effect/cli": "^0.72.1",
+    "abitype": "^1.1.2",
+    "jiti": "^2.6.1",
+    "jose": "^6.1.2",
+    "js-toml": "^1.0.2",
+    "minimatch": "^10.1.1",
+    "open": "^11.0.0",
+    "viem": "^2.39.3"
+  },
+  "peerDependencies": {
+    "@bufbuild/protobuf": "^2.10.1",
+    "@connectrpc/connect": "^2.1.1",
+    "@connectrpc/connect-node": "^2.1.1",
+    "@effect/platform": "^0.93.3",
+    "@effect/platform-node": "^0.101.0",
+    "apache-arrow": "^21.1.0",
+    "effect": "^3.19.5"
+  },
+  "devDependencies": {
+    "@bufbuild/buf": "^1.60.0",
+    "@bufbuild/protoc-gen-es": "^2.10.1",
+    "@connectrpc/connect": "^2.1.1",
+    "@connectrpc/connect-node": "^2.1.1",
+    "@effect/platform": "^0.93.3",
+    "@effect/platform-node": "^0.101.0",
+    "@effect/vitest": "^0.27.0",
+    "@types/node": "^24.10.1",
+    "apache-arrow": "^21.1.0",
+    "effect": "^3.19.5",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.12"
+  }
+}

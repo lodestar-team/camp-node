@@ -1,0 +1,500 @@
+- name: restore_eth_rpc
+  restore: _/eth_rpc@0.0.0
+
+- name: select_alias_special_block_num_empty_relation
+  query: |
+    SELECT 0 AS _block_num
+  failure: |
+    projection contains a column alias starting with '_': '_block_num'. Underscore-prefixed names are reserved. Please rename your column
+
+- name: select_alias_special_block_num_table
+  query: |
+    SELECT 0 AS _block_num FROM eth_rpc.blocks
+  failure: |
+    projection contains a column alias starting with '_': '_block_num'. Underscore-prefixed names are reserved. Please rename your column
+
+- name: select_1
+  query: SELECT 1
+  results: |
+    [
+      {"Int64(1)": 1}
+    ]
+
+- name: evm_topic
+  query: SELECT evm_topic('Transfer(address indexed from, address indexed to, uint256 value)') AS topic
+  results: |
+    [
+      {
+        "topic": "ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+      }
+    ]
+
+- name: evm_decode_log
+  query: |
+    SELECT evm_decode_log(l.topic1, l.topic2, l.topic3, l.data, 'Transfer(address indexed from, address indexed to, uint256 value)') AS decoded
+    FROM eth_rpc.logs l
+    WHERE l.topic0 = evm_topic('Transfer(address indexed from, address indexed to, uint256 value)')
+    AND l.topic3 IS NULL
+    LIMIT 1
+  results: |
+    [
+      {
+        "decoded": {
+          "from": "06729eb2424da47898f935267bd4a62940de5105",
+          "to": "beefbabeea323f07c59926295205d3b7a17e8638",
+          "value": "6818627949560085517"
+        }
+      }
+    ]
+
+- name: evm_decode_log_deprecated_name
+  query: |
+    SELECT evm_decode(l.topic1, l.topic2, l.topic3, l.data, 'Transfer(address indexed from, address indexed to, uint256 value)') AS decoded
+    FROM eth_rpc.logs l
+    WHERE l.topic0 = evm_topic('Transfer(address indexed from, address indexed to, uint256 value)')
+    AND l.topic3 IS NULL
+    LIMIT 1
+  results: |
+    [
+      {
+        "decoded": {
+          "from": "06729eb2424da47898f935267bd4a62940de5105",
+          "to": "beefbabeea323f07c59926295205d3b7a17e8638",
+          "value": "6818627949560085517"
+        }
+      }
+    ]
+
+- name: eth_call
+  query: |
+    SELECT eth_rpc.eth_call(from, to, input, CAST(block_num as STRING)) AS call
+    FROM eth_rpc.transactions
+    WHERE tx_index = 2
+  results: |
+    [
+      {
+        "call": {
+          "data": "08c379a0000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000015500000000000000000000000000000000000000000000000000000000000000",
+          "message": "execution reverted: U"
+        }
+      }
+    ]
+
+- name: evm_decode_params
+  query: |
+    SELECT evm_decode_params(input, 'function approve(address _spender, uint256 _value)') AS params
+    FROM eth_rpc.transactions
+    WHERE block_num = 15000000 AND tx_index = 333
+  results: |
+    [
+      {
+        "params": {
+          "_spender": "abea9132b05a70803a4e85094fd0e1800777fbef",
+          "_value": "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+        }
+      }
+    ]
+
+- name: evm_decode_params_array
+  query: |
+    SELECT evm_decode_params(
+      decode('e051f3ca00000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000003000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000002', 'hex'),
+      'function example(uint32[] arg)'
+    ) AS params
+  results: |
+    [
+      {
+        "params": {
+          "arg": [0, 1, 2]
+        }
+      }
+    ]
+
+- name: evm_decode_params_array_invalid
+  query: |
+    SELECT evm_decode_params(
+      decode('00000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000003000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000002', 'hex'),
+      'function example(uint32[] arg)'
+    ) AS params
+  results: |
+    [
+      {
+      }
+    ]
+
+- name: evm_decode_params_fixed_size_array
+  query: |
+    SELECT evm_decode_params(
+      decode('5777e1a4000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000002', 'hex'),
+      'function example(uint32[3] arg)'
+    ) AS params
+  results: |
+    [
+      {
+        "params": {
+          "arg": [0, 1, 2]
+        }
+      }
+    ]
+
+- name: evm_decode_params_fixed_size_array_invalid
+  query: |
+    SELECT evm_decode_params(
+      decode('000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000002', 'hex'),
+      'function example(uint32[3] arg)'
+    ) AS params
+  results: |
+    [
+      {
+      }
+    ]
+
+- name: evm_decode_params_tuple
+  query: |
+    SELECT evm_decode_params(
+      decode('73e7784e0000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000060000000000000000000000000000000000000000000000000000000000000000568656c6c6f000000000000000000000000000000000000000000000000000000', 'hex'),
+      'function example((uint32, uint32, string) arg)'
+    ) AS params
+  results: |
+    [
+      {
+        "params": {
+          "arg": {
+            "c0": 0,
+            "c1": 1,
+            "c2": "hello"
+          }
+        }
+      }
+    ]
+
+- name: evm_decode_params_tuple_invalid
+  query: |
+    SELECT evm_decode_params(
+      decode('0000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000060000000000000000000000000000000000000000000000000000000000000000568656c6c6f000000000000000000000000000000000000000000000000000000', 'hex'),
+      'function example((uint32, uint32, string) arg)'
+    ) AS params
+  results: |
+    [
+      {
+      }
+    ]
+
+- name: evm_decode_params_selector_mismatch
+  query: |
+    SELECT evm_decode_params(input, 'function approve(address _spender, uint256 _value)') AS params
+    FROM eth_rpc.transactions
+    WHERE block_num = 15000000 AND tx_index = 334
+  results: |
+    [{}]
+
+- name: evm_decode_params
+  query: |
+    SELECT evm_encode_params(to, CAST(123123123 AS DECIMAL(41, 0)), input, 'function example(address _to, uint256 _value, bytes _input) public returns (bool success)') AS encoded
+    FROM eth_rpc.transactions
+    WHERE block_num = 15000000 AND tx_index = 2
+  results: |
+    [
+      {
+        "encoded": "af32b01f000000000000000000000000beefbabeea323f07c59926295205d3b7a17e8638000000000000000000000000000000000000000000000000000000000756b5b30000000000000000000000000000000000000000000000000000000000000060000000000000000000000000000000000000000000000000000000000000008f000000020000000000000000000000000000000000000000000000000000000003e366320000000000000000000000000000000000000000000000005ea06407f0408000aaaebe6fe48e54f431b0c390cfaf0b017d09d42dc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2000bb800000000000000000000000000000000000000000000000000210fa439a7fc040000000000000000000000000000000000"
+      }
+    ]
+
+- name: evm_encode_then_decode_params
+  query: |
+    SELECT evm_decode_params(encoded, 'function transfer(address _to, uint256 _value) public returns (bool success)') AS decoded
+    FROM (
+        SELECT to, evm_encode_params(to, CAST(100 AS DECIMAL(39, 0)), 'function transfer(address _to, uint256 _value) public returns (bool success)') AS encoded
+        FROM eth_rpc.transactions
+        WHERE block_num = 15000000 AND tx_index = 2
+    )
+  results: |
+    [
+      {
+        "decoded": {
+          "_to": "beefbabeea323f07c59926295205d3b7a17e8638",
+          "_value": "100"
+        }
+      }
+    ]
+
+- name: evm_encode_type_scalars
+  query: |
+    SELECT
+      evm_encode_type(CAST(635 AS DECIMAL(39, 0)), 'uint256') AS uint256,
+      evm_encode_type(CAST(-635 AS DECIMAL(39, 0)), 'int256') AS int256,
+      evm_encode_type(CAST(-635 AS DECIMAL(38, 0)), 'int128') AS int128,
+      evm_encode_type('hello world', 'string') AS str,
+      evm_encode_type(CAST(100 AS TINYINT), 'int8') AS int8
+  results: |
+    [
+      {
+        "uint256": "000000000000000000000000000000000000000000000000000000000000027b",
+        "int256": "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffd85",
+        "int128": "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffd85",
+        "str": "0000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000b68656c6c6f20776f726c64000000000000000000000000000000000000000000",
+        "int8": "0000000000000000000000000000000000000000000000000000000000000064"
+      }
+    ]
+
+- name: evm_encode_decode_type_scalars
+  query: |
+    SELECT
+      evm_decode_type(evm_encode_type(CAST(635 AS DECIMAL(39, 0)), 'uint256'), 'uint256') AS uint256,
+      evm_decode_type(evm_encode_type(CAST(-635 AS DECIMAL(39, 0)), 'int256'), 'int256') AS int256,
+      evm_decode_type(evm_encode_type(CAST(-635 AS DECIMAL(38, 0)), 'int128'), 'int128') AS int128,
+      evm_decode_type(evm_encode_type('hello world', 'string'), 'string') AS str,
+      evm_decode_type(evm_encode_type(CAST(100 AS TINYINT), 'int8'), 'int8') AS int8
+  results: |
+    [
+      {
+        "uint256": "635",
+        "int256": "-635",
+        "int128": -635,
+        "str": "hello world",
+        "int8": 100
+      }
+    ]
+
+- name: evm_encode_type_array_scalar
+  query: |
+    SELECT evm_encode_type([1, 2, 3], 'int256[]') AS arr
+  results: |
+    [
+      {"arr":"00000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000003000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000003"}
+    ]
+
+- name: evm_encode_decode_type_array_scalar
+  query: |
+    SELECT evm_decode_type(evm_encode_type([1, 2, 3], 'int256[]'), 'int256[]') AS arr
+  results: |
+    [
+      {"arr": ["1", "2", "3"]}
+    ]
+
+- name: evm_encode_type_array_column
+  query: |
+    SELECT evm_encode_type([tx_index+1, tx_index+2, tx_index+3], 'int256[]') AS arr
+    FROM eth_rpc.transactions
+    ORDER BY tx_index
+    LIMIT 1
+  results: |
+    [
+      {"arr":"00000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000003000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000003"}
+    ]
+
+- name: evm_encode_decode_type_array_column
+  query: |
+    SELECT evm_decode_type(evm_encode_type([tx_index+1, tx_index+2, tx_index+3], 'int256[]'), 'int256[]') AS arr
+    FROM eth_rpc.transactions
+    ORDER BY tx_index
+    LIMIT 1
+  results: |
+    [
+      {"arr": ["1", "2", "3"]}
+    ]
+
+- name: evm_encode_type_fixed_array_scalar
+  query: |
+    SELECT evm_encode_type(arrow_cast([1, 2, 3], 'FixedSizeList(3, Int64)'), 'int256[3]') AS arr
+  results: |
+    [
+      {"arr":"000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000003"}
+    ]
+
+- name: evm_encode_decode_type_fixed_array_scalar
+  query: |
+    SELECT evm_decode_type(evm_encode_type(arrow_cast([1, 2, 3], 'FixedSizeList(3, Int64)'), 'int64[3]'), 'int64[3]') AS arr
+  results: |
+    [
+      {"arr": [1, 2, 3]}
+    ]
+
+- name: evm_encode_type_fixed_array_column
+  query: |
+    SELECT evm_encode_type(arrow_cast([tx_index+1, tx_index+2, tx_index+3], 'FixedSizeList(3, Int64)'), 'int256[3]') AS arr
+    FROM eth_rpc.transactions
+    ORDER BY tx_index
+    LIMIT 1
+  results: |
+    [
+      {"arr":"000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000003"}
+    ]
+
+- name: evm_encode_type_struct_scalar
+  query: |
+    SELECT evm_encode_type(struct(1, 2, 'str'), '(int256, int256, string)') AS struct
+  results: |
+    [
+      {"struct":"000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000006000000000000000000000000000000000000000000000000000000000000000037374720000000000000000000000000000000000000000000000000000000000"}
+    ]
+
+- name: evm_encode_decode_type_struct_scalar
+  query: |
+    SELECT evm_decode_type(evm_encode_type(struct(1, 2, 'str'), '(int256, int8, string)'), '(int256, int8, string)') AS struct
+  results: |
+    [
+      {
+        "struct": {
+          "c0": "1",
+          "c1": 2,
+          "c2": "str"
+        }
+      }
+    ]
+
+- name: evm_encode_decode_nested_type
+  query: |
+    SELECT evm_decode_type(evm_encode_type(struct(1, 2, ['str1', 'str2', 'str3']), '(int256, int8, string[])'), '(int256, int8, string[])') AS struct
+  results: |
+    [
+      {
+        "struct": {
+          "c0": "1",
+          "c1": 2,
+          "c2": ["str1", "str2", "str3"]
+        }
+      }
+    ]
+
+- name: evm_encode_type_struct_column
+  query: |
+    SELECT
+      evm_encode_type(struct(tx_index+1, tx_index+2, 'str'), '(int256, int256, string)') AS struct1,
+      evm_encode_type(struct(tx_index+1, 'str'), '(int256, string)') AS struct2
+    FROM eth_rpc.transactions
+    ORDER BY tx_index
+    LIMIT 1
+  results: |
+    [
+      {
+        "struct1":"000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000006000000000000000000000000000000000000000000000000000000000000000037374720000000000000000000000000000000000000000000000000000000000",
+        "struct2":"00000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000037374720000000000000000000000000000000000000000000000000000000000"
+      }
+    ]
+
+- name: evm_encode_transaction_values
+  query: |
+    SELECT evm_encode_type(value, 'uint256') AS value
+    FROM eth_rpc.transactions
+    WHERE block_num = 15000000
+    LIMIT 20
+  results: |
+    [
+      {"value": "000000000000000000000000000000000000000000000000003e606b18c24f0f"},
+      {"value": "00000000000000000000000000000000000000000000000000316c27e1c17a8c"},
+      {"value": "0000000000000000000000000000000000000000000000000000000000e4e1c0"},
+      {"value": "0000000000000000000000000000000000000000000000000000000000e4e1c0"},
+      {"value": "0000000000000000000000000000000000000000000000000000000000e4e1c0"},
+      {"value": "0000000000000000000000000000000000000000000000000000000000000000"},
+      {"value": "0000000000000000000000000000000000000000000000000000000000e4e1c0"},
+      {"value": "0000000000000000000000000000000000000000000000000000000000000506"},
+      {"value": "000000000000000000000000000000000000000000000000000000000000fa05"},
+      {"value": "0000000000000000000000000000000000000000000000000000000000000000"},
+      {"value": "000000000000000000000000000000000000000000000000136dcc951d8c0000"},
+      {"value": "000000000000000000000000000000000000000000000000134a45a2adcb0000"},
+      {"value": "000000000000000000000000000000000000000000000000136dcc951d8c0000"},
+      {"value": "000000000000000000000000000000000000000000000000134a45a2adcb0000"},
+      {"value": "0000000000000000000000000000000000000000000000000000000000000000"},
+      {"value": "000000000000000000000000000000000000000000000000134a45a2adcb0000"},
+      {"value": "000000000000000000000000000000000000000000000000001c6bf526340000"},
+      {"value": "000000000000000000000000000000000000000000000000136dcc951d8c0000"},
+      {"value": "000000000000000000000000000000000000000000000000136dcc951d8c0000"},
+      {"value": "0000000000000000000000000000000000000000000000000075e76692293000"}
+    ]
+
+- name: evm_encode_type_mismatch_int_to_uint
+  query: |
+    SELECT evm_encode_type(CAST(-2 AS TINYINT), 'uint8')
+  failure: |
+    expected int type, got uint8
+
+- name: evm_encode_type_mismatch_int_to_string
+  query: |
+    SELECT evm_encode_type(CAST(-2 AS TINYINT), 'string')
+  failure: |
+    expected int type, got string
+
+- name: evm_encode_type_mismatch_string_to_uint
+  query: |
+    SELECT evm_encode_type('str', 'uint256')
+  failure: |
+    cannot convert string to solidity type uint256
+
+- name: evm_encode_params_empty
+  query: |
+    SELECT evm_encode_params('function f()') AS encoded
+  results: |
+    [{"encoded": "26121ff0"}]
+
+- name: evm_decode_params_empty
+  query: |
+    SELECT evm_decode_params(decode('26121ff0', 'hex'), 'function f()') AS decoded
+  results: |
+    [{"decoded": {}}]
+
+- name: evm_encode_decimal_256_with_scale
+  query: |
+    SELECT evm_encode_type(CAST(635 AS DECIMAL(39, 1)), 'uint256') AS uint256
+  failure: |
+    Unsupported type Decimal256(39, 1) for Solidity type uint256
+
+- name: evm_encode_decimal_128_with_scale
+  query: |
+    SELECT evm_encode_type(CAST(635 AS DECIMAL(38, 1)), 'uint128') AS uint128
+  failure: |
+    Unsupported type Decimal128(38, 1) for Solidity type uint128
+
+- name: evm_encode_decimal_256_with_trailing_zeros
+  query: |
+    SELECT evm_encode_type(CAST(635000 AS DECIMAL(39, 0)), 'uint256') AS uint256
+  results: |
+    [{"uint256":"000000000000000000000000000000000000000000000000000000000009b078"}]
+
+- name: evm_encode_decimal_128_with_trailing_zeros
+  query: |
+    SELECT evm_encode_type(CAST(635000 AS DECIMAL(38, 0)), 'uint128') AS uint128
+  results: |
+    [{"uint128":"000000000000000000000000000000000000000000000000000000000009b078"}]
+
+- name: select_special_block_num
+  query: |
+    SELECT _block_num
+    FROM eth_rpc.blocks
+  results: |
+    [{"_block_num": 15000000}]
+
+- name: implicit_cross_join_duplicate_field_names
+  query: select * from eth_rpc.blocks, eth_rpc.logs limit 1
+  failure: |
+    Duplicate field names detected in plan schema: [eth_rpc.blocks._block_num and eth_rpc.logs._block_num, eth_rpc.blocks.block_num and eth_rpc.logs.block_num, eth_rpc.blocks.timestamp and eth_rpc.logs.timestamp]. Please alias your columns to be unique.
+
+- name: implicit_cross_join
+  query: select logs.* from eth_rpc.blocks, eth_rpc.logs logs limit 1
+  results: |
+    [{"_block_num":15000000,"address":"c02aaa39b223fe8d0a0e5c4f27ead9083c756cc2","block_hash":"9a71a95be3fe957457b11817587e5af4c7e24836d5b383c430ff25b9286a457f","block_num":15000000,"data":"0000000000000000000000000000000000000000000000005ea0a1fe55143c0d","log_index":0,"timestamp":"2022-06-21T02:28:20Z","topic0":"ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef","topic1":"00000000000000000000000006729eb2424da47898f935267bd4a62940de5105","topic2":"000000000000000000000000beefbabeea323f07c59926295205d3b7a17e8638","tx_hash":"beb3d09a644dc0772719f498172af05ed8cd337aaf83c2b5aee43be34fcb9dfb","tx_index":2}]
+
+- name: select_alias_starting_with_underscore
+  query: |
+    SELECT block_num AS _hello
+    FROM eth_rpc.blocks
+  failure: |
+    projection contains a column alias starting with '_': '_hello'. Underscore-prefixed names are reserved. Please rename your column
+
+- name: select_alias_starting_with_underscore_subquery
+  query: |
+    SELECT 0 AS zero
+    FROM (SELECT block_num as _hello FROM eth_rpc.blocks)
+  failure: |
+    projection contains a column alias starting with '_': '_hello'. Underscore-prefixed names are reserved. Please rename your column
+
+- name: basic_explain
+  query: EXPLAIN select block_num FROM eth_rpc.blocks
+  results: |
+    [{"plan":"TableScan: eth_rpc.blocks projection=[block_num]","plan_type":"logical_plan"},{"plan":"DataSourceExec: file_groups={1 group: [[015000000-82eebeea2cd27638.parquet]]}, projection=[block_num], output_ordering=[block_num@0 ASC NULLS LAST], file_type=parquet, predicate=true\n","plan_type":"physical_plan"}]
+
+- name: select_empty
+  query: SELECT block_num FROM eth_rpc.blocks WHERE eth_rpc.blocks.block_num > 90000000000;
+  results: |
+    []
+  recordBatchCount: 2 # extra batch for app_metadata to signal completion
