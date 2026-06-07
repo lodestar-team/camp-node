@@ -145,6 +145,23 @@ through Pinax; this attacks the `evm-rpc` hot path, the query/serve layer, and D
 
 ---
 
+## Build notes (de-risked, ready to execute)
+
+**pgwire endpoint (Tier 1 #1) — feasibility confirmed.**
+- Use **`datafusion-postgres` 0.12.2** — it requires `datafusion ^50`, an exact match for our
+  workspace (DataFusion 50.3.0, arrow 56.2.0). 0.13+ track DF51–53; do **not** bump them
+  without a DataFusion upgrade. Pulls `pgwire` transitively.
+- Reuse the existing context builder in `crates/core/common/src/query_context.rs`
+  (`datafusion_ctx` + `register_table` / `create_catalog_schema` / `register_udfs`) — the same
+  machinery `flight`/`jsonl` use — to produce a `SessionContext`, then `setup_pg_catalog(ctx)`
+  + `serve(ctx, ServerOptions)`.
+- Design decisions to make: (1) pgwire holds a **persistent** context, but camp registers
+  tables per-query by dataset ref — build a context with **all current datasets pre-registered
+  as catalog schemas**, refreshed when datasets change; (2) map camp's `"ns/name@ver".table`
+  to clean Postgres `schema.table` (e.g. schema `arbitrum_one`, table `blocks`) so BI tools see
+  normal names; (3) **read-only** — refuse writes; conservative on cancellation. New crate
+  `crates/services/pgserver`, `--pg-server` flag on `ampd dev`/`server`, default `127.0.0.1:5432`.
+
 ## Always-true constraints
 
 - The real prize remains **Arbitrum full instrumentation** via the `pinax` source the moment
