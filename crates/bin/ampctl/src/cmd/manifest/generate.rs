@@ -169,6 +169,26 @@ where
             };
             serde_json::to_vec_pretty(&manifest).map_err(Error::Serialization)?
         }
+        dataset_store::DatasetKind::Pinax => {
+            // Pinax reuses the firehose EVM table schemas.
+            let tables = firehose_datasets::evm::tables::all(&network)
+                .iter()
+                .map(|table| {
+                    let schema = table_schema_from_logical_table(table);
+                    let manifest_table =
+                        firehose_datasets::dataset::Table::new(schema, network.clone());
+                    (table.name().to_string(), manifest_table)
+                })
+                .collect();
+            let manifest = pinax_datasets::Manifest {
+                kind: kind.as_str().parse().expect("kind is valid"),
+                network: network.clone(),
+                start_block: start_block.unwrap_or(0),
+                finalized_blocks_only,
+                tables,
+            };
+            serde_json::to_vec_pretty(&manifest).map_err(Error::Serialization)?
+        }
         dataset_store::DatasetKind::Derived => {
             return Err(Error::DerivedNotSupported);
         }

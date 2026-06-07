@@ -23,6 +23,7 @@ members = [
     "crates/extractors/eth-beacon/gen",
     "crates/extractors/firehose",
     "crates/extractors/firehose/gen",
+    "crates/extractors/pinax",
     "crates/extractors/solana",
     "crates/extractors/solana/gen",
     "crates/services/admin-api",

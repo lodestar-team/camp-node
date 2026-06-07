@@ -14,6 +14,7 @@ use datasets_derived::DerivedDatasetKind;
 use eth_beacon_datasets::EthBeaconDatasetKind;
 use evm_rpc_datasets::EvmRpcDatasetKind;
 use firehose_datasets::FirehoseDatasetKind;
+use pinax_datasets::PinaxDatasetKind;
 use solana_datasets::SolanaDatasetKind;
 
 /// Represents the different types of datasets supported by the system.
@@ -32,6 +33,8 @@ pub enum DatasetKind {
     EthBeacon,
     /// StreamingFast Firehose dataset for high-throughput blockchain streaming.
     Firehose,
+    /// Pinax Firehose→Parquet (S3) source.
+    Pinax,
     /// Derived dataset.
     ///
     /// Modern dataset definition using structured configuration.
@@ -46,7 +49,7 @@ impl DatasetKind {
     pub fn is_raw(&self) -> bool {
         matches!(
             self,
-            Self::EvmRpc | Self::Solana | Self::EthBeacon | Self::Firehose
+            Self::EvmRpc | Self::Solana | Self::EthBeacon | Self::Firehose | Self::Pinax
         )
     }
 
@@ -60,6 +63,7 @@ impl DatasetKind {
             Self::Solana => SolanaDatasetKind.as_str(),
             Self::EthBeacon => EthBeaconDatasetKind.as_str(),
             Self::Firehose => FirehoseDatasetKind.as_str(),
+            Self::Pinax => PinaxDatasetKind.as_str(),
             Self::Derived => DerivedDatasetKind.as_str(),
         }
     }
@@ -81,6 +85,7 @@ impl_from_for_kind!(EvmRpcDatasetKind, DatasetKind::EvmRpc);
 impl_from_for_kind!(SolanaDatasetKind, DatasetKind::Solana);
 impl_from_for_kind!(EthBeaconDatasetKind, DatasetKind::EthBeacon);
 impl_from_for_kind!(FirehoseDatasetKind, DatasetKind::Firehose);
+impl_from_for_kind!(PinaxDatasetKind, DatasetKind::Pinax);
 impl_from_for_kind!(DerivedDatasetKind, DatasetKind::Derived);
 
 /// Macro to generate bidirectional `PartialEq` implementations between
@@ -105,6 +110,7 @@ impl_partial_eq_for_kind!(EvmRpcDatasetKind, DatasetKind::EvmRpc);
 impl_partial_eq_for_kind!(SolanaDatasetKind, DatasetKind::Solana);
 impl_partial_eq_for_kind!(EthBeaconDatasetKind, DatasetKind::EthBeacon);
 impl_partial_eq_for_kind!(FirehoseDatasetKind, DatasetKind::Firehose);
+impl_partial_eq_for_kind!(PinaxDatasetKind, DatasetKind::Pinax);
 impl_partial_eq_for_kind!(DerivedDatasetKind, DatasetKind::Derived);
 
 impl std::fmt::Display for DatasetKind {
@@ -122,6 +128,7 @@ impl std::str::FromStr for DatasetKind {
             s if s == SolanaDatasetKind => Ok(Self::Solana),
             s if s == EthBeaconDatasetKind => Ok(Self::EthBeacon),
             s if s == FirehoseDatasetKind => Ok(Self::Firehose),
+            s if s == PinaxDatasetKind => Ok(Self::Pinax),
             s if s == DerivedDatasetKind => Ok(Self::Derived),
             _ => Err(UnsupportedKindError {
                 kind: s.to_string(),

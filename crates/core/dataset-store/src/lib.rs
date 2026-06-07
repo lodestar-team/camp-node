@@ -29,6 +29,7 @@ use firehose_datasets::dataset::{
 };
 use metadata_db::MetadataDb;
 use monitoring::{logging, telemetry::metrics::Meter};
+use pinax_datasets::{Manifest as PinaxManifest, ProviderConfig as PinaxProviderConfig};
 use parking_lot::RwLock;
 use rand::seq::SliceRandom as _;
 use solana_datasets::{Manifest as SolanaManifest, ProviderConfig as SolanaProviderConfig};
@@ -747,6 +748,16 @@ impl DatasetStore {
                     })?;
                 firehose_datasets::evm::dataset(hash.clone(), manifest)
             }
+            DatasetKind::Pinax => {
+                let manifest = manifest_content
+                    .try_into_manifest::<PinaxManifest>()
+                    .map_err(|source| GetDatasetError::ParseManifest {
+                        reference: reference.clone(),
+                        kind,
+                        source,
+                    })?;
+                pinax_datasets::dataset(hash.clone(), manifest)
+            }
             DatasetKind::Derived => {
                 let manifest = manifest_content
                     .try_into_manifest::<DerivedManifest>()
@@ -939,6 +950,15 @@ impl DatasetStore {
                         name: provider_name.clone(),
                         source: err,
                     })?
+            }
+            DatasetKind::Pinax => {
+                let config = config
+                    .try_into_config::<PinaxProviderConfig>()
+                    .map_err(|err| GetClientError::ProviderConfigParseError {
+                        name: provider_name.clone(),
+                        source: err,
+                    })?;
+                BlockStreamClient::Pinax(pinax_datasets::client::PinaxClient::new(&config))
             }
             DatasetKind::Derived => {
                 unreachable!("non-raw dataset kinds are filtered out earlier");

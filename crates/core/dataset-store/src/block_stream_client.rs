@@ -8,6 +8,7 @@ pub(crate) enum BlockStreamClient {
     Solana(solana_datasets::SolanaExtractor),
     EthBeacon(eth_beacon_datasets::BeaconClient),
     Firehose(Box<firehose_datasets::Client>),
+    Pinax(pinax_datasets::client::PinaxClient),
 }
 
 impl BlockStreamer for BlockStreamClient {
@@ -44,6 +45,12 @@ impl BlockStreamer for BlockStreamClient {
                         yield item;
                     }
                 }
+                Self::Pinax(client) => {
+                    let stream = client.block_stream(start_block, end_block).await;
+                    for await item in stream {
+                        yield item;
+                    }
+                }
             }
         }
     }
@@ -54,6 +61,7 @@ impl BlockStreamer for BlockStreamClient {
             Self::Solana(client) => client.latest_block(finalized).await,
             Self::EthBeacon(client) => client.latest_block(finalized).await,
             Self::Firehose(client) => client.latest_block(finalized).await,
+            Self::Pinax(client) => client.latest_block(finalized).await,
         }
     }
 
@@ -63,6 +71,7 @@ impl BlockStreamer for BlockStreamClient {
             Self::Solana(client) => client.provider_name(),
             Self::EthBeacon(client) => client.provider_name(),
             Self::Firehose(client) => client.provider_name(),
+            Self::Pinax(client) => client.provider_name(),
         }
     }
 }

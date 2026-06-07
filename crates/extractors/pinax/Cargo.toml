@@ -1,0 +1,29 @@
+[package]
+name = "pinax-datasets"
+edition.workspace = true
+version.workspace = true
+license-file.workspace = true
+
+# Pinax (Firehose→Parquet in S3) source for camp-node. Reads Pinax's public
+# Parquet (Tigris/S3) for a block range and materialises it through the engine's
+# own writer — so files get the proper nozzle_metadata/footer + catalog entries,
+# unlike an external dataset-restore. Reuses the firehose table schemas
+# (blocks/calls/logs/transactions).
+
+[dependencies]
+common = { path = "../../core/common" }
+datasets-common = { path = "../../core/datasets-common" }
+firehose-datasets = { path = "../firehose" }
+monitoring = { path = "../../core/monitoring" }
+async-stream.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_with = "3.9.0"
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+url.workspace = true
+arrow.workspace = true
+object_store.workspace = true
+parquet = { version = "56", features = ["async", "object_store"] }
+hex.workspace = true

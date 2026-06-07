@@ -24,6 +24,7 @@ dump = { path = "../../core/dump" }
 eth-beacon-datasets = { path = "../../extractors/eth-beacon" }
 evm-rpc-datasets = { path = "../../extractors/evm-rpc" }
 firehose-datasets = { path = "../../extractors/firehose" }
+pinax-datasets = { path = "../../extractors/pinax" }
 monitoring = { path = "../../core/monitoring" }
 object_store.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

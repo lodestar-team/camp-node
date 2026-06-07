@@ -16,6 +16,7 @@ use eth_beacon_datasets::Manifest as EthBeaconManifest;
 use evm_rpc_datasets::Manifest as EvmRpcManifest;
 use firehose_datasets::dataset::Manifest as FirehoseManifest;
 use monitoring::logging;
+use pinax_datasets::Manifest as PinaxManifest;
 use serde_json::value::RawValue;
 use solana_datasets::Manifest as SolanaManifest;
 
@@ -199,6 +200,10 @@ pub async fn handler(
                     .map_err(Error::from)?,
                     DatasetKind::Firehose => parse_and_canonicalize_raw_dataset_manifest::<
                         FirehoseManifest,
+                    >(manifest_content.get())
+                    .map_err(Error::from)?,
+                    DatasetKind::Pinax => parse_and_canonicalize_raw_dataset_manifest::<
+                        PinaxManifest,
                     >(manifest_content.get())
                     .map_err(Error::from)?,
                     DatasetKind::EthBeacon => parse_and_canonicalize_raw_dataset_manifest::<

@@ -14,6 +14,7 @@ datasets-derived = { path = "../datasets-derived" }
 eth-beacon-datasets = { path = "../../extractors/eth-beacon" }
 evm-rpc-datasets = { path = "../../extractors/evm-rpc" }
 firehose-datasets = { path = "../../extractors/firehose" }
+pinax-datasets = { path = "../../extractors/pinax" }
 futures.workspace = true
 metadata-db = { path = "../metadata-db" }
 monitoring = { path = "../monitoring" }
