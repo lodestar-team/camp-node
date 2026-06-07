@@ -1,10 +1,11 @@
 //! `BlockStreamer` over Pinax Parquet in S3 (anonymous Tigris bucket).
 //!
-//! v1: serves the `calls` table (internal-tx traces — data RPC can't produce).
-//! For a block range it selects the overlapping Pinax `calls` parquet partitions
-//! (via footer block_num stats), maps their columns onto camp-node's firehose
-//! `calls` schema, and yields one `RawDatasetRows` per block. The engine's worker
-//! then writes proper camp-node parquet.
+//! Serves the full-instrumentation tables a JSON-RPC indexer can't produce:
+//! `calls` (internal-tx traces) + `storage_changes` / `balance_changes` /
+//! `code_changes` / `nonce_changes`. For a block range it locates the overlapping
+//! Pinax partition files per table (binary search over the chronologically-sorted
+//! file list — not a full scan), maps each onto the Amp schema, and yields one
+//! `RawDatasetRows` per block. The engine's worker writes proper camp-node parquet.
 
 use std::sync::Arc;
 
@@ -12,21 +13,20 @@ use arrow::array::{
     Array, ArrayRef, BinaryArray, BooleanArray, Decimal128Array, FixedSizeBinaryArray,
     Int32Array, RecordBatch, StringArray, TimestampNanosecondArray, UInt32Array, UInt64Array,
 };
-use arrow::datatypes::DataType;
+use arrow::datatypes::{DataType, SchemaRef};
 use common::{
     BlockNum, BlockStreamer, BoxError, RawDatasetRows, RawTableRows, Table,
     metadata::segments::BlockRange,
 };
-use futures::{Stream, StreamExt};
-use object_store::{ObjectStore, aws::AmazonS3Builder, path::Path};
+use futures::{Stream, StreamExt, TryStreamExt};
+use object_store::{ObjectMeta, ObjectStore, aws::AmazonS3Builder, path::Path};
 use parquet::arrow::ParquetRecordBatchStreamBuilder;
 use parquet::arrow::async_reader::ParquetObjectReader;
 
-/// Reads Pinax `calls` parquet for a chain and maps it to camp-node rows.
 #[derive(Clone)]
 pub struct PinaxClient {
     pub name: String,
-    /// Public S3/HTTPS base, e.g. "https://pinax.fly.storage.tigris.dev".
+    /// Public virtual-hosted base, e.g. "https://pinax.fly.storage.tigris.dev".
     pub endpoint: String,
     /// Chain prefix in the bucket, e.g. "mainnet".
     pub network: String,
@@ -41,14 +41,7 @@ impl PinaxClient {
         }
     }
 
-    /// Build an anonymous S3 store for the public Pinax (Tigris) bucket.
-    /// `endpoint` is the virtual-hosted public base `https://<bucket>.<host>`.
     fn store(&self) -> Result<Arc<dyn ObjectStore>, BoxError> {
-        // Split "https://pinax.fly.storage.tigris.dev" -> bucket="pinax", host="https://fly.storage.tigris.dev".
-        // `endpoint` is the public virtual-hosted base, e.g.
-        // "https://pinax.fly.storage.tigris.dev" (bucket already in the host).
-        // object_store (with endpoint set + vhost) uses the endpoint host as-is,
-        // so we point it at the full vhost base and just record the bucket name.
         let bucket = self
             .endpoint
             .strip_prefix("https://")
@@ -65,13 +58,18 @@ impl PinaxClient {
             .build()?;
         Ok(Arc::new(s3))
     }
+}
 
-    fn calls_table(&self) -> Table {
-        firehose_datasets::evm::tables::all(&self.network)
-            .into_iter()
-            .find(|t| t.name() == "calls")
-            .expect("firehose defines a `calls` table")
-    }
+/// (amp table name, pinax partition dir, mapper) — pinax dir == amp name here.
+type MapFn = fn(&RecordBatch) -> Result<RecordBatch, BoxError>;
+fn table_specs() -> Vec<(&'static str, MapFn)> {
+    vec![
+        ("calls", map_calls as MapFn),
+        ("storage_changes", map_storage_changes),
+        ("balance_changes", map_balance_changes),
+        ("code_changes", map_code_changes),
+        ("nonce_changes", map_nonce_changes),
+    ]
 }
 
 impl BlockStreamer for PinaxClient {
@@ -82,47 +80,41 @@ impl BlockStreamer for PinaxClient {
     ) -> impl Stream<Item = Result<RawDatasetRows, BoxError>> + Send {
         async_stream::try_stream! {
             let store = self.store()?;
-            let table = self.calls_table();
-            let prefix = Path::from(format!("{}/calls", self.network));
-
-            // 1. Read all overlapping partition files into one Amp-schema batch.
-            // Files list chronologically and block_num is monotonic with time, so
-            // skip files entirely before the range and stop once we're past it
-            // (avoids footer-reading the whole multi-year partition).
-            let mut listing = store.list(Some(&prefix));
-            let mut amp_batches: Vec<RecordBatch> = Vec::new();
-            while let Some(meta) = listing.next().await {
-                let meta = meta?;
-                let reader = ParquetObjectReader::new(store.clone(), meta.location.clone());
-                let builder = ParquetRecordBatchStreamBuilder::new(reader).await?;
-                let (fmin, fmax) = file_block_bounds(&builder);
-                if let Some(mx) = fmax {
-                    if mx < start {
-                        continue; // file is before the range
+            let specs = table_specs();
+            // table -> (Table, mapped Amp batches across the range)
+            let mut loaded: Vec<(Table, Vec<RecordBatch>)> = Vec::new();
+            for (name, map_fn) in &specs {
+                let table = crate::tables::all(&self.network)
+                    .into_iter()
+                    .find(|t| t.name() == *name)
+                    .ok_or_else(|| -> BoxError { format!("no table {name}").into() })?;
+                let prefix = Path::from(format!("{}/{}", self.network, name));
+                let files = files_in_range(&store, &prefix, start, end).await?;
+                let mut batches = Vec::new();
+                for meta in files {
+                    let reader = ParquetObjectReader::new(store.clone(), meta.location);
+                    let builder = ParquetRecordBatchStreamBuilder::new(reader).await?;
+                    let mut s = builder.build()?;
+                    while let Some(b) = s.next().await {
+                        batches.push(map_fn(&b?)?);
                     }
                 }
-                if let Some(mn) = fmin {
-                    if mn > end {
-                        break; // sorted listing → no later file overlaps
-                    }
-                }
-                let mut batches = builder.build()?;
-                while let Some(batch) = batches.next().await {
-                    amp_batches.push(map_calls_batch(&batch?, start, end)?);
-                }
+                loaded.push((table, batches));
             }
 
-            // 2. Emit one RawDatasetRows per block in the range.
             for block in start..=end {
-                let cols = filter_block(&amp_batches, block, table.schema().as_ref())?;
-                let range = BlockRange {
-                    numbers: block..=block,
-                    network: self.network.clone(),
-                    hash: Default::default(),
-                    prev_hash: None,
-                };
-                let rows = RawTableRows::new(table.clone(), range, cols)?;
-                yield RawDatasetRows::new(vec![rows]);
+                let mut rows = Vec::with_capacity(loaded.len());
+                for (table, batches) in &loaded {
+                    let cols = filter_block(batches, block, table.schema())?;
+                    let range = BlockRange {
+                        numbers: block..=block,
+                        network: self.network.clone(),
+                        hash: Default::default(),
+                        prev_hash: None,
+                    };
+                    rows.push(RawTableRows::new(table.clone(), range, cols)?);
+                }
+                yield RawDatasetRows::new(rows);
             }
         }
     }
@@ -130,22 +122,12 @@ impl BlockStreamer for PinaxClient {
     async fn latest_block(&mut self, _finalized: bool) -> Result<Option<BlockNum>, BoxError> {
         let store = self.store()?;
         let prefix = Path::from(format!("{}/calls", self.network));
-        // Find the lexicographically-latest partition file (date-partitioned),
-        // then read its footer max block_num.
-        let mut listing = store.list(Some(&prefix));
-        let mut latest: Option<object_store::path::Path> = None;
-        while let Some(meta) = listing.next().await {
-            let loc = meta?.location;
-            if latest.as_ref().is_none_or(|l| loc > *l) {
-                latest = Some(loc);
-            }
-        }
-        let Some(loc) = latest else {
+        let metas: Vec<ObjectMeta> = store.list(Some(&prefix)).try_collect().await?;
+        let Some(last) = metas.into_iter().max_by(|a, b| a.location.cmp(&b.location)) else {
             return Ok(None);
         };
-        let reader = ParquetObjectReader::new(store.clone(), loc);
-        let builder = ParquetRecordBatchStreamBuilder::new(reader).await?;
-        Ok(column_stats_max(&builder, "block_num"))
+        let (_, mx) = file_bounds(&store, &last).await?;
+        Ok(mx)
     }
 
     fn provider_name(&self) -> &str {
@@ -153,153 +135,81 @@ impl BlockStreamer for PinaxClient {
     }
 }
 
-// ---- helpers ----
+// ---- file selection (binary search over chronologically-sorted files) ----
 
-/// File's `block_num` (min, max) from parquet row-group stats, if available.
-fn file_block_bounds(
-    builder: &ParquetRecordBatchStreamBuilder<ParquetObjectReader>,
-) -> (Option<BlockNum>, Option<BlockNum>) {
-    let meta = builder.metadata();
+async fn file_bounds(
+    store: &Arc<dyn ObjectStore>,
+    meta: &ObjectMeta,
+) -> Result<(Option<BlockNum>, Option<BlockNum>), BoxError> {
+    let reader = ParquetObjectReader::new(store.clone(), meta.location.clone());
+    let builder = ParquetRecordBatchStreamBuilder::new(reader).await?;
+    let m = builder.metadata();
     let schema = builder.parquet_schema();
     let Some(idx) = (0..schema.num_columns()).find(|&i| schema.column(i).name() == "block_num")
     else {
-        return (None, None);
+        return Ok((None, None));
     };
-    let mut fmin = u64::MAX;
-    let mut fmax = 0u64;
-    let mut have = false;
-    for rg in meta.row_groups() {
-        if let Some(stats) = rg.column(idx).statistics() {
-            if let (Some(mn), Some(mx)) = (
-                stats_as_u64(stats.min_bytes_opt()),
-                stats_as_u64(stats.max_bytes_opt()),
-            ) {
-                fmin = fmin.min(mn);
-                fmax = fmax.max(mx);
+    let (mut lo, mut hi, mut have) = (u64::MAX, 0u64, false);
+    for rg in m.row_groups() {
+        if let Some(st) = rg.column(idx).statistics() {
+            if let (Some(a), Some(b)) = (u64le(st.min_bytes_opt()), u64le(st.max_bytes_opt())) {
+                lo = lo.min(a);
+                hi = hi.max(b);
                 have = true;
             }
         }
     }
-    if have { (Some(fmin), Some(fmax)) } else { (None, None) }
+    Ok(if have { (Some(lo), Some(hi)) } else { (None, None) })
 }
 
-fn stats_as_u64(bytes: Option<&[u8]>) -> Option<u64> {
-    let b = bytes?;
-    if b.len() == 8 {
-        Some(u64::from_le_bytes(b.try_into().ok()?))
-    } else {
-        None
+fn u64le(b: Option<&[u8]>) -> Option<u64> {
+    let b = b?;
+    (b.len() == 8).then(|| u64::from_le_bytes(b.try_into().unwrap()))
+}
+
+/// Files overlapping [start,end], via binary search on the sorted listing.
+async fn files_in_range(
+    store: &Arc<dyn ObjectStore>,
+    prefix: &Path,
+    start: BlockNum,
+    end: BlockNum,
+) -> Result<Vec<ObjectMeta>, BoxError> {
+    let mut metas: Vec<ObjectMeta> = store.list(Some(prefix)).try_collect().await?;
+    metas.sort_by(|a, b| a.location.cmp(&b.location)); // chronological
+    if metas.is_empty() {
+        return Ok(vec![]);
     }
-}
-
-fn column_stats_max(
-    builder: &ParquetRecordBatchStreamBuilder<ParquetObjectReader>,
-    col: &str,
-) -> Option<BlockNum> {
-    let meta = builder.metadata();
-    let schema = builder.parquet_schema();
-    let idx = (0..schema.num_columns()).find(|&i| schema.column(i).name() == col)?;
-    let mut max = None;
-    for rg in meta.row_groups() {
-        if let Some(stats) = rg.column(idx).statistics() {
-            if let Some(mx) = stats_as_u64(stats.max_bytes_opt()) {
-                max = Some(max.map_or(mx, |m: u64| m.max(mx)));
-            }
+    // lowest index whose max_block >= start (unknown stats treated as candidate)
+    let (mut lo, mut hi) = (0usize, metas.len());
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        let (_, mx) = file_bounds(store, &metas[mid]).await?;
+        match mx {
+            Some(mx) if mx < start => lo = mid + 1,
+            _ => hi = mid,
         }
     }
-    max
+    // forward scan, stop once a file starts past end
+    let mut out = Vec::new();
+    for meta in &metas[lo..] {
+        let (mn, _) = file_bounds(store, meta).await?;
+        if let Some(mn) = mn {
+            if mn > end {
+                break;
+            }
+        }
+        out.push(meta.clone());
+    }
+    Ok(out)
 }
 
-/// Map a Pinax `calls` RecordBatch onto the firehose `calls` Amp schema,
-/// keeping only rows with block_num in [start, end].
-fn map_calls_batch(b: &RecordBatch, start: BlockNum, end: BlockNum) -> Result<RecordBatch, BoxError> {
-    // Cast to Utf8 so dictionary-encoded / large-utf8 columns (e.g. call_type) work.
-    let s = |n: &str| -> Result<StringArray, BoxError> {
-        let c = b
-            .column_by_name(n)
-            .ok_or_else(|| -> BoxError { format!("pinax calls missing column {n}").into() })?;
-        let utf8 = arrow::compute::cast(c, &DataType::Utf8)?;
-        Ok(utf8
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .ok_or_else(|| -> BoxError { format!("{n} not castable to Utf8").into() })?
-            .clone())
-    };
-    let u64c = |n: &str| -> Result<UInt64Array, BoxError> {
-        let c = b
-            .column_by_name(n)
-            .ok_or_else(|| -> BoxError { format!("missing {n}").into() })?;
-        Ok(arrow::compute::cast(c, &DataType::UInt64)?
-            .as_any()
-            .downcast_ref::<UInt64Array>()
-            .ok_or_else(|| -> BoxError { format!("{n} cast u64").into() })?
-            .clone())
-    };
-    let u32c = |n: &str| -> Result<UInt32Array, BoxError> {
-        let c = b
-            .column_by_name(n)
-            .ok_or_else(|| -> BoxError { format!("missing {n}").into() })?;
-        Ok(arrow::compute::cast(c, &DataType::UInt32)?
-            .as_any()
-            .downcast_ref::<UInt32Array>()
-            .ok_or_else(|| -> BoxError { format!("{n} cast u32").into() })?
-            .clone())
-    };
-
-    let block_num = u64c("block_num")?;
-    let ts_secs = u64c("timestamp")?;
-
-    let cols: Vec<ArrayRef> = vec![
-        Arc::new(block_num.clone()),                                  // _block_num
-        Arc::new(fsb_from_hex(&s("block_id")?, 32)?),                 // block_hash
-        Arc::new(block_num.clone()),                                  // block_num
-        Arc::new(ts_ns_from_secs(&ts_secs)),                          // timestamp
-        Arc::new(u32c("tx_index")?),                                  // tx_index
-        Arc::new(fsb_from_hex(&s("tx_hash")?, 32)?),                  // tx_hash
-        Arc::new(u32c("call_index")?),                                // index
-        Arc::new(u32c("parent_index")?),                              // parent_index
-        Arc::new(u32c("depth")?),                                     // depth
-        Arc::new(call_type_to_i32(&s("call_type")?)),                 // call_type
-        Arc::new(fsb_from_hex(&s("caller")?, 20)?),                   // caller
-        Arc::new(fsb_from_hex(&s("address")?, 20)?),                  // address
-        Arc::new(dec128_from_str(&s("value")?)?),                     // value
-        Arc::new(u64c("gas_limit")?),                                 // gas_limit
-        Arc::new(u64c("gas_consumed")?),                              // gas_consumed
-        Arc::new(bin_from_hex(&s("output")?)),                        // return_data
-        Arc::new(bin_from_hex(&s("input")?)),                         // input
-        Arc::new(bool_col(b, "suicide")?),                            // selfdestruct
-        Arc::new(bool_col(b, "executed_code")?),                      // executed_code
-        Arc::new(UInt64Array::from(vec![0u64; b.num_rows()])),        // begin_ordinal
-        Arc::new(UInt64Array::from(vec![0u64; b.num_rows()])),        // end_ordinal
-    ];
-
-    // Build against the Amp schema, then filter to [start, end].
-    let table = firehose_calls_schema();
-    let batch = RecordBatch::try_new(table, cols)?;
-    let mask: BooleanArray = block_num
-        .iter()
-        .map(|v| v.map(|n| n >= start && n <= end))
-        .collect();
-    Ok(arrow::compute::filter_record_batch(&batch, &mask)?)
-}
-
-fn firehose_calls_schema() -> arrow::datatypes::SchemaRef {
-    // Use the canonical firehose calls table schema.
-    firehose_datasets::evm::tables::all("")
-        .into_iter()
-        .find(|t| t.name() == "calls")
-        .expect("calls")
-        .schema()
-        .clone()
-}
-
-/// Slice all mapped batches down to a single block and return columns in schema order.
+/// Slice all of a table's mapped batches to a single block; columns in schema order.
 fn filter_block(
     batches: &[RecordBatch],
     block: BlockNum,
-    schema: &arrow::datatypes::Schema,
+    schema: &SchemaRef,
 ) -> Result<Vec<ArrayRef>, BoxError> {
-    let mut kept: Vec<RecordBatch> = Vec::new();
+    let mut kept = Vec::new();
     for b in batches {
         let bn = b
             .column_by_name(common::SPECIAL_BLOCK_NUM)
@@ -311,84 +221,160 @@ fn filter_block(
         kept.push(arrow::compute::filter_record_batch(b, &mask)?);
     }
     let combined = if kept.is_empty() {
-        RecordBatch::new_empty(Arc::new(schema.clone()))
+        RecordBatch::new_empty(schema.clone())
     } else {
-        arrow::compute::concat_batches(&Arc::new(schema.clone()), &kept)?
+        arrow::compute::concat_batches(schema, &kept)?
     };
     Ok(combined.columns().to_vec())
 }
 
-fn fsb_from_hex(a: &StringArray, n: usize) -> Result<FixedSizeBinaryArray, BoxError> {
+// ---- column helpers ----
+
+/// Get a column as Utf8 (handles dictionary / large-utf8 / utf8view).
+fn utf8(b: &RecordBatch, n: &str) -> Result<StringArray, BoxError> {
+    let c = b
+        .column_by_name(n)
+        .ok_or_else(|| -> BoxError { format!("missing column {n}").into() })?;
+    Ok(arrow::compute::cast(c, &DataType::Utf8)?
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .ok_or_else(|| -> BoxError { format!("{n} not Utf8-castable").into() })?
+        .clone())
+}
+fn u64col(b: &RecordBatch, n: &str) -> Result<UInt64Array, BoxError> {
+    let c = b.column_by_name(n).ok_or_else(|| -> BoxError { format!("missing {n}").into() })?;
+    Ok(arrow::compute::cast(c, &DataType::UInt64)?
+        .as_any().downcast_ref::<UInt64Array>().unwrap().clone())
+}
+fn u32col(b: &RecordBatch, n: &str) -> Result<UInt32Array, BoxError> {
+    let c = b.column_by_name(n).ok_or_else(|| -> BoxError { format!("missing {n}").into() })?;
+    Ok(arrow::compute::cast(c, &DataType::UInt32)?
+        .as_any().downcast_ref::<UInt32Array>().unwrap().clone())
+}
+fn fsb(a: &StringArray, n: usize) -> Result<FixedSizeBinaryArray, BoxError> {
     let mut vals: Vec<Option<Vec<u8>>> = Vec::with_capacity(a.len());
     for i in 0..a.len() {
         if a.is_null(i) {
             vals.push(None);
         } else {
             let h = a.value(i).strip_prefix("0x").unwrap_or(a.value(i));
-            let b = hex::decode(h).map_err(|e| -> BoxError { e.to_string().into() })?;
-            vals.push(Some(b));
+            match hex::decode(h) {
+                Ok(b) if b.len() == n => vals.push(Some(b)),
+                _ => vals.push(None), // wrong length / invalid → null
+            }
         }
     }
-    Ok(FixedSizeBinaryArray::try_from_sparse_iter_with_size(
-        vals.into_iter(),
-        n as i32,
-    )?)
+    Ok(FixedSizeBinaryArray::try_from_sparse_iter_with_size(vals.into_iter(), n as i32)?)
 }
-
-fn bin_from_hex(a: &StringArray) -> BinaryArray {
+fn bin(a: &StringArray) -> BinaryArray {
     let owned: Vec<Option<Vec<u8>>> = (0..a.len())
-        .map(|i| {
-            if a.is_null(i) {
-                None
-            } else {
-                let h = a.value(i).strip_prefix("0x").unwrap_or(a.value(i));
-                Some(hex::decode(h).unwrap_or_default())
-            }
-        })
+        .map(|i| (!a.is_null(i)).then(|| {
+            let h = a.value(i).strip_prefix("0x").unwrap_or(a.value(i));
+            hex::decode(h).unwrap_or_default()
+        }))
         .collect();
     BinaryArray::from_iter(owned.iter().map(|o| o.as_deref()))
 }
-
-fn dec128_from_str(a: &StringArray) -> Result<Decimal128Array, BoxError> {
-    let mut out: Vec<Option<i128>> = Vec::with_capacity(a.len());
-    for i in 0..a.len() {
-        if a.is_null(i) || a.value(i).is_empty() {
-            out.push(None);
-        } else {
-            out.push(a.value(i).parse::<i128>().ok());
-        }
-    }
+fn dec(a: &StringArray) -> Result<Decimal128Array, BoxError> {
+    let out: Vec<Option<i128>> = (0..a.len())
+        .map(|i| (!a.is_null(i) && !a.value(i).is_empty()).then(|| a.value(i).parse::<i128>().ok()).flatten())
+        .collect();
     Ok(Decimal128Array::from(out).with_precision_and_scale(38, 0)?)
 }
-
-fn ts_ns_from_secs(a: &UInt64Array) -> TimestampNanosecondArray {
-    let v: Vec<i64> = (0..a.len())
-        .map(|i| (a.value(i) as i64).saturating_mul(1_000_000_000))
-        .collect();
+fn ts_ns(a: &UInt64Array) -> TimestampNanosecondArray {
+    let v: Vec<i64> = (0..a.len()).map(|i| (a.value(i) as i64).saturating_mul(1_000_000_000)).collect();
     TimestampNanosecondArray::from(v).with_timezone("+00:00")
 }
 
-fn call_type_to_i32(a: &StringArray) -> Int32Array {
-    let v: Vec<i32> = (0..a.len())
-        .map(|i| match a.value(i).to_ascii_uppercase().as_str() {
-            "CALL" => 1,
-            "CALLCODE" => 2,
-            "DELEGATE" | "DELEGATECALL" => 3,
-            "STATIC" | "STATICCALL" => 4,
-            "CREATE" => 5,
-            "SELFDESTRUCT" => 6,
-            _ => 0,
-        })
-        .collect();
-    Int32Array::from(v)
+fn sch(table: &str) -> SchemaRef {
+    crate::tables::schema_for("", table).expect("schema")
 }
 
-fn bool_col(b: &RecordBatch, n: &str) -> Result<BooleanArray, BoxError> {
-    let c = b
-        .column_by_name(n)
-        .ok_or_else(|| -> BoxError { format!("missing {n}").into() })?;
-    Ok(c.as_any()
-        .downcast_ref::<BooleanArray>()
-        .ok_or_else(|| -> BoxError { format!("{n} not bool").into() })?
-        .clone())
+/// Shared head columns for change tables: _block_num, block_hash, block_num, timestamp, tx_hash, ordinal, address.
+fn head(b: &RecordBatch) -> Result<Vec<ArrayRef>, BoxError> {
+    let block_num = u64col(b, "block_num")?;
+    Ok(vec![
+        Arc::new(block_num.clone()),
+        Arc::new(fsb(&utf8(b, "block_id")?, 32)?),
+        Arc::new(block_num),
+        Arc::new(ts_ns(&u64col(b, "timestamp")?)),
+        Arc::new(fsb(&utf8(b, "tx_hash")?, 32)?),
+        Arc::new(u64col(b, "ordinal")?),
+        Arc::new(fsb(&utf8(b, "address")?, 20)?),
+    ])
+}
+
+// ---- per-table mappers ----
+
+fn map_storage_changes(b: &RecordBatch) -> Result<RecordBatch, BoxError> {
+    let mut c = head(b)?;
+    c.push(Arc::new(bin(&utf8(b, "key")?)));
+    c.push(Arc::new(bin(&utf8(b, "old_value")?)));
+    c.push(Arc::new(bin(&utf8(b, "new_value")?)));
+    Ok(RecordBatch::try_new(sch("storage_changes"), c)?)
+}
+fn map_balance_changes(b: &RecordBatch) -> Result<RecordBatch, BoxError> {
+    let mut c = head(b)?;
+    c.push(Arc::new(utf8(b, "old_value")?));
+    c.push(Arc::new(utf8(b, "new_value")?));
+    c.push(Arc::new(utf8(b, "reason")?));
+    Ok(RecordBatch::try_new(sch("balance_changes"), c)?)
+}
+fn map_code_changes(b: &RecordBatch) -> Result<RecordBatch, BoxError> {
+    let mut c = head(b)?;
+    c.push(Arc::new(fsb(&utf8(b, "old_hash")?, 32)?));
+    c.push(Arc::new(fsb(&utf8(b, "new_hash")?, 32)?));
+    c.push(Arc::new(bin(&utf8(b, "old_code")?)));
+    c.push(Arc::new(bin(&utf8(b, "new_code")?)));
+    Ok(RecordBatch::try_new(sch("code_changes"), c)?)
+}
+fn map_nonce_changes(b: &RecordBatch) -> Result<RecordBatch, BoxError> {
+    let mut c = head(b)?;
+    c.push(Arc::new(u64col(b, "old_value")?));
+    c.push(Arc::new(u64col(b, "new_value")?));
+    Ok(RecordBatch::try_new(sch("nonce_changes"), c)?)
+}
+
+fn map_calls(b: &RecordBatch) -> Result<RecordBatch, BoxError> {
+    let block_num = u64col(b, "block_num")?;
+    let ct_src = utf8(b, "call_type")?;
+    let ct = Int32Array::from(
+        (0..ct_src.len())
+            .map(|i| match ct_src.value(i).to_ascii_uppercase().as_str() {
+                "CALL" => 1, "CALLCODE" => 2, "DELEGATE" | "DELEGATECALL" => 3,
+                "STATIC" | "STATICCALL" => 4, "CREATE" => 5, "SELFDESTRUCT" => 6, _ => 0,
+            })
+            .collect::<Vec<i32>>(),
+    );
+    let bool_col = |n: &str| -> Result<BooleanArray, BoxError> {
+        Ok(b.column_by_name(n)
+            .ok_or_else(|| -> BoxError { format!("missing {n}").into() })?
+            .as_any().downcast_ref::<BooleanArray>()
+            .ok_or_else(|| -> BoxError { format!("{n} not bool").into() })?.clone())
+    };
+    let zero = || UInt64Array::from(vec![0u64; b.num_rows()]);
+    let cols: Vec<ArrayRef> = vec![
+        Arc::new(block_num.clone()),
+        Arc::new(fsb(&utf8(b, "block_id")?, 32)?),
+        Arc::new(block_num),
+        Arc::new(ts_ns(&u64col(b, "timestamp")?)),
+        Arc::new(u32col(b, "tx_index")?),
+        Arc::new(fsb(&utf8(b, "tx_hash")?, 32)?),
+        Arc::new(u32col(b, "call_index")?),
+        Arc::new(u32col(b, "parent_index")?),
+        Arc::new(u32col(b, "depth")?),
+        Arc::new(ct),
+        Arc::new(fsb(&utf8(b, "caller")?, 20)?),
+        Arc::new(fsb(&utf8(b, "address")?, 20)?),
+        Arc::new(dec(&utf8(b, "value")?)?),
+        Arc::new(u64col(b, "gas_limit")?),
+        Arc::new(u64col(b, "gas_consumed")?),
+        Arc::new(bin(&utf8(b, "output")?)),
+        Arc::new(bin(&utf8(b, "input")?)),
+        Arc::new(bool_col("suicide")?),
+        Arc::new(bool_col("executed_code")?),
+        Arc::new(zero()),
+        Arc::new(zero()),
+    ];
+    Ok(RecordBatch::try_new(sch("calls"), cols)?)
 }

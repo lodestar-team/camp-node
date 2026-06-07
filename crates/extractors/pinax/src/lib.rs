@@ -6,6 +6,7 @@
 
 pub mod client;
 pub mod dataset_kind;
+pub mod tables;
 
 pub use dataset_kind::PinaxDatasetKind;
 
@@ -43,12 +44,8 @@ pub struct Manifest {
 /// schemas so `calls`/`storage_changes`-class data lands in known columns.
 pub fn dataset(manifest_hash: datasets_common::hash::Hash, manifest: Manifest) -> Dataset {
     let network = manifest.network;
-    // v1: expose only the `calls` table (the trace data RPC can't produce). The
-    // firehose EVM tables provide the schema; other tables land in a later pass.
-    let tables = firehose_datasets::evm::tables::all(&network)
-        .into_iter()
-        .filter(|t| t.name() == "calls")
-        .collect();
+    // Full-instrumentation set: calls + storage/balance/code/nonce changes.
+    let tables = crate::tables::all(&network);
     Dataset {
         manifest_hash,
         dependencies: BTreeMap::new(),

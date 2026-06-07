@@ -170,8 +170,8 @@ where
             serde_json::to_vec_pretty(&manifest).map_err(Error::Serialization)?
         }
         dataset_store::DatasetKind::Pinax => {
-            // Pinax reuses the firehose EVM table schemas.
-            let tables = firehose_datasets::evm::tables::all(&network)
+            // Pinax full-instrumentation tables (calls + storage/balance/code/nonce changes).
+            let tables = pinax_datasets::tables::all(&network)
                 .iter()
                 .map(|table| {
                     let schema = table_schema_from_logical_table(table);
