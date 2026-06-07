@@ -36,6 +36,40 @@ through Pinax; this attacks the `evm-rpc` hot path, the query/serve layer, and D
 
 ---
 
+## Progress checklist
+
+**Phase 0 — measure & protect**
+- [x] Baseline metrics — see [`ops/BASELINE.md`](./ops/BASELINE.md) (⚠️ ~45k files/table; compactor not merging)
+- [~] Off-box backup + tested restore — tooling done & verified (`ops/backup.sh`, `ops/restore.sh`); **needs an off-box remote configured** (rclone + `restic init`) to go live
+
+**Tier 1 — serve the live service**
+- [ ] Postgres-wire endpoint (`crates/services/pgserver`, pgwire + datafusion-postgres)
+- [ ] Parquet layout tuning (sort `logs` by `(address, block_num)` + Bloom filters)
+- [ ] Materialized decoded views (`materialized_view` manifest kind + bundled views)
+- [ ] Lift streaming-SQL limits (JSON Lines blocking-plan path)
+- [ ] Flight SQL on the Flight server
+- [ ] Enable compactor by default
+- [ ] Allocator benchmark (mimalloc / jemalloc / snmalloc) + pick winner
+- [ ] Parquet footer cache (LRU)
+
+**Tier 2 — cheaper / faster ingest**
+- [ ] HyperSync extractor (`crates/extractors/evm-hypersync`, opt-in, no-vendor default kept)
+- [ ] Snapshot / `ampctl dataset bootstrap`
+- [ ] Parallel range-sharded backfill + cryo-style aligned chunking
+
+**Tier 3 — grow camp-node as a product**
+- [ ] Extism/WASM plugin runtime (replace Deno `js-runtime`) + `camp-pdk`
+- [ ] `redb` embedded metadata + `--solo` mode
+- [ ] `ampctl init <contract>` via Sourcify + TS/Python/Rust codegen
+- [ ] Reth ExEx extractor (`crates/extractors/evm-reth-exex`; non-Arbitrum)
+- [ ] Observability (`/v1/status` lag/latency, OpenTelemetry) + SIWE token tiers
+
+**Tier 4 — defer until demand**
+- [ ] ClickHouse mirror sink in `ampsync`
+- [ ] Federation / discovery (Graphcast/Waku gossip)
+
+---
+
 ## Phase 0 — Measure & protect (do first)
 
 - **Off-box backup + tested restore (camp's real #1).** Nightly sync of the Parquet data dir

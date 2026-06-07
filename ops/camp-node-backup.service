@@ -1,0 +1,12 @@
+[Unit]
+Description=camp-node off-box backup (restic data dir + pg_dump metadata)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Put RESTIC_REPOSITORY, RESTIC_PASSWORD_FILE, PG_DUMP_URL, DATA_DIR here (chmod 600):
+EnvironmentFile=%h/.config/camp-node/backup.env
+ExecStart=%h/amp-source/ops/backup.sh
+Nice=10
+IOSchedulingClass=idle
