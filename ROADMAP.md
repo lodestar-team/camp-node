@@ -44,7 +44,7 @@ through Pinax; this attacks the `evm-rpc` hot path, the query/serve layer, and D
 
 **Tier 1 — serve the live service**
 - [ ] Postgres-wire endpoint (`crates/services/pgserver`, pgwire + datafusion-postgres)
-- [ ] Parquet layout tuning (sort `logs` by `(address, block_num)` + Bloom filters)
+- [x] Parquet Bloom filters — default-on, per-column (`address`/`topic0-3`/`tx_hash`/`block_hash`), verified present in written files + query correctness. (Sort-by-address intentionally skipped: bloom subsumes it for equality filters and sorting would hurt `block_num` range-pruning.)
 - [ ] Materialized decoded views (`materialized_view` manifest kind + bundled views)
 - [ ] Lift streaming-SQL limits (JSON Lines blocking-plan path)
 - [ ] Flight SQL on the Flight server

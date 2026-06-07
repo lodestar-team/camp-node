@@ -132,11 +132,25 @@ pub fn parquet_opts(config: &common::config::ParquetConfig) -> Arc<WriterPropert
     // Note: We could set `sorting_columns` for columns like `block_num` and `ordinal`. However,
     // Datafusion doesn't actually read that metadata info anywhere and just reiles on the
     // `file_sort_order` set on the reader configuration.
-    let parquet = ParquetWriterProperties::builder()
-        .set_compression(config.compression)
-        .set_bloom_filter_ndv(bloom_filter_ndv)
-        .set_bloom_filter_enabled(config.bloom_filters)
-        .build();
+    // Bloom filters only help equality predicates, so enable them per-column on the
+    // high-selectivity columns the blockchain access pattern filters on
+    // (`WHERE address = ? AND topic0 = ?`) rather than globally — same pruning benefit,
+    // far less storage than a filter on every column. Column names absent from a given
+    // table's schema are simply ignored by the writer.
+    let bloom_columns = [
+        "address", "topic0", "topic1", "topic2", "topic3", "tx_hash", "caller", "block_hash",
+        "hash", "from", "to",
+    ];
+    let mut builder = ParquetWriterProperties::builder().set_compression(config.compression);
+    if config.bloom_filters {
+        for col in bloom_columns {
+            let path = common::parquet::schema::types::ColumnPath::from(col);
+            builder = builder
+                .set_column_bloom_filter_enabled(path.clone(), true)
+                .set_column_bloom_filter_ndv(path, bloom_filter_ndv);
+        }
+    }
+    let parquet = builder.build();
 
     let collector = CollectorProperties::from(config);
     let compactor = CompactorProperties::from(config);

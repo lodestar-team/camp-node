@@ -66,8 +66,8 @@ pub struct ParquetConfig {
         deserialize_with = "deserialize_compression"
     )]
     pub compression: Compression,
-    /// Enable bloom filters (default: false)
-    #[serde(default)]
+    /// Enable bloom filters on high-selectivity columns (default: true)
+    #[serde(default = "default_bloom_filters")]
     pub bloom_filters: bool,
     /// Parquet metadata cache size in MB (default: 1024)
     #[serde(default = "default_cache_size_mb")]
@@ -93,7 +93,7 @@ impl Default for ParquetConfig {
     fn default() -> Self {
         Self {
             compression: default_compression(),
-            bloom_filters: false,
+            bloom_filters: default_bloom_filters(),
             cache_size_mb: default_cache_size_mb(),
             max_row_group_mb: default_max_row_group_mb(),
             target_size: SizeLimitConfig::default_upper_limit(),
@@ -282,6 +282,10 @@ impl Default for MetadataDbConfig {
             auto_migrate: true,
         }
     }
+}
+
+fn default_bloom_filters() -> bool {
+    true
 }
 
 fn default_compression() -> Compression {
