@@ -34,7 +34,8 @@ database. The pipeline is four stages:
    └──────────────┘      └──────────────────┘   └──────────────┘    └────────────────────┘
 ```
 
-1. **Extract** — a *provider* (e.g. `evm-rpc`) pulls blocks, transactions, and logs from a
+1. **Extract** — a *provider* (e.g. `evm-rpc`, or `pinax` for Firehose→Parquet) pulls
+   blocks, transactions, and logs from a
    chain's JSON-RPC endpoint, in batched/concurrent requests, resumable from the last
    indexed block.
 2. **Transform** — data is processed with SQL through [Apache DataFusion](https://datafusion.apache.org/),
@@ -56,6 +57,23 @@ Because the storage layer is Parquet and the query layer is DataFusion SQL, you 
 on-chain data the way you'd query any analytics warehouse — `SELECT … WHERE … GROUP BY …`
 over `blocks`, `transactions`, and `logs` — with full SQL (joins, aggregates, window
 functions) and sub-second columnar scans, instead of writing a bespoke indexer per use case.
+
+---
+
+## Data sources
+
+camp-node extracts via pluggable **provider kinds** (`ampctl manifest generate --kind <kind>`):
+
+- **`evm-rpc`** — pulls blocks/transactions/logs from any Ethereum-compatible JSON-RPC
+  endpoint (batched, resumable). The default for tip-following a chain.
+- **`pinax`** — reads [Pinax](https://pinax.network)'s public Firehose→Parquet datasets
+  (S3) and materialises them in-engine, unlocking **full-instrumentation** tables RPC can't
+  produce: `calls` (internal-tx traces) today, with `storage_changes`/balance changes and
+  non-EVM chains on the same path. Provider config points at the public bucket; no API key.
+- `firehose`, `solana`, `eth-beacon` — additional source kinds.
+
+Every kind feeds the same store/serve layer, so datasets from different sources are queried
+identically.
 
 ---
 
