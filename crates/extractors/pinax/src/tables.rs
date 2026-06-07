@@ -70,16 +70,14 @@ pub fn nonce_changes(network: String) -> Table {
 /// firehose extractor; the change tables are defined above.
 pub fn all(network: &str) -> Vec<Table> {
     let n = || network.to_string();
-    vec![
-        firehose_datasets::evm::tables::all(network)
-            .into_iter()
-            .find(|t| t.name() == "calls")
-            .expect("firehose calls table"),
-        storage_changes(n()),
-        balance_changes(n()),
-        code_changes(n()),
-        nonce_changes(n()),
-    ]
+    // blocks/transactions/logs/calls reuse the firehose EVM schemas; the change
+    // tables are defined above.
+    let mut tables: Vec<Table> = firehose_datasets::evm::tables::all(network);
+    tables.push(storage_changes(n()));
+    tables.push(balance_changes(n()));
+    tables.push(code_changes(n()));
+    tables.push(nonce_changes(n()));
+    tables
 }
 
 /// Schema for one Amp table by name (for the mapper to build batches against).

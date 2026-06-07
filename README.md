@@ -67,12 +67,13 @@ camp-node extracts via pluggable **provider kinds** (`ampctl manifest generate -
 - **`evm-rpc`** — pulls blocks/transactions/logs from any Ethereum-compatible JSON-RPC
   endpoint (batched, resumable). The default for tip-following a chain.
 - **`pinax`** — reads [Pinax](https://pinax.network)'s public Firehose→Parquet datasets
-  (S3) and materialises them in-engine, unlocking the **full-instrumentation** set a JSON-RPC
-  indexer can't produce: `calls` (internal-tx traces), `storage_changes`, `balance_changes`
-  (with reason), `code_changes`, and `nonce_changes`. Overlapping partition files are located
-  by binary search over the chronologically-sorted listing (not a full scan), so a block
-  range doesn't read years of history. Provider config points at the public bucket; no API
-  key. (Non-EVM chains and `blocks`/`transactions`/`logs` follow on the same path.)
+  (S3) and materialises them in-engine. Serves the standard EVM tables (`blocks`,
+  `transactions`, `logs`) **plus** the **full-instrumentation** set a JSON-RPC indexer can't
+  produce: `calls` (internal-tx traces), `storage_changes`, `balance_changes` (with reason),
+  `code_changes`, and `nonce_changes` — eight tables, one `RawDatasetRows` per block. Files
+  overlapping a block range are located by binary search over the chronologically-sorted
+  listing (not a full scan), so a range doesn't read years of history. Provider config points
+  at the public bucket; no API key. (Non-EVM chains follow on the same path.)
 - `firehose`, `solana`, `eth-beacon` — additional source kinds.
 
 Every kind feeds the same store/serve layer, so datasets from different sources are queried

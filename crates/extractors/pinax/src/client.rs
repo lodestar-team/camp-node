@@ -12,6 +12,7 @@ use std::sync::Arc;
 use arrow::array::{
     Array, ArrayRef, BinaryArray, BooleanArray, Decimal128Array, FixedSizeBinaryArray,
     Int32Array, RecordBatch, StringArray, TimestampNanosecondArray, UInt32Array, UInt64Array,
+    new_null_array,
 };
 use arrow::datatypes::{DataType, SchemaRef};
 use common::{
@@ -64,7 +65,10 @@ impl PinaxClient {
 type MapFn = fn(&RecordBatch) -> Result<RecordBatch, BoxError>;
 fn table_specs() -> Vec<(&'static str, MapFn)> {
     vec![
-        ("calls", map_calls as MapFn),
+        ("blocks", map_blocks as MapFn),
+        ("transactions", map_transactions),
+        ("logs", map_logs),
+        ("calls", map_calls),
         ("storage_changes", map_storage_changes),
         ("balance_changes", map_balance_changes),
         ("code_changes", map_code_changes),
@@ -266,14 +270,20 @@ fn fsb(a: &StringArray, n: usize) -> Result<FixedSizeBinaryArray, BoxError> {
     }
     Ok(FixedSizeBinaryArray::try_from_sparse_iter_with_size(vals.into_iter(), n as i32)?)
 }
+/// Hex → Binary, never null: null/invalid source maps to empty bytes (so it
+/// satisfies non-nullable Binary columns like `data`/`input`/`extra_data`).
 fn bin(a: &StringArray) -> BinaryArray {
-    let owned: Vec<Option<Vec<u8>>> = (0..a.len())
-        .map(|i| (!a.is_null(i)).then(|| {
-            let h = a.value(i).strip_prefix("0x").unwrap_or(a.value(i));
-            hex::decode(h).unwrap_or_default()
-        }))
+    let owned: Vec<Vec<u8>> = (0..a.len())
+        .map(|i| {
+            if a.is_null(i) {
+                Vec::new()
+            } else {
+                let h = a.value(i).strip_prefix("0x").unwrap_or(a.value(i));
+                hex::decode(h).unwrap_or_default()
+            }
+        })
         .collect();
-    BinaryArray::from_iter(owned.iter().map(|o| o.as_deref()))
+    BinaryArray::from_iter_values(owned.iter().map(|v| v.as_slice()))
 }
 fn dec(a: &StringArray) -> Result<Decimal128Array, BoxError> {
     let out: Vec<Option<i128>> = (0..a.len())
@@ -288,6 +298,48 @@ fn ts_ns(a: &UInt64Array) -> TimestampNanosecondArray {
 
 fn sch(table: &str) -> SchemaRef {
     crate::tables::schema_for("", table).expect("schema")
+}
+
+// Defaults for Amp fields Pinax doesn't carry (kept non-null per schema).
+fn fsb_zero(rows: usize, n: usize) -> FixedSizeBinaryArray {
+    let z = vec![0u8; n];
+    FixedSizeBinaryArray::try_from_sparse_iter_with_size(
+        std::iter::repeat(Some(z.clone())).take(rows),
+        n as i32,
+    )
+    .expect("zero fsb")
+}
+fn bin_empty(rows: usize) -> BinaryArray {
+    BinaryArray::from_iter(std::iter::repeat(Some(&[] as &[u8])).take(rows))
+}
+fn u64_const(rows: usize, v: u64) -> UInt64Array {
+    UInt64Array::from(vec![v; rows])
+}
+fn null_of(dt: &DataType, rows: usize) -> ArrayRef {
+    new_null_array(dt, rows)
+}
+/// Parse an int-ish Pinax string ("0x2" / "2" / "SUCCEEDED") to i32.
+fn parse_i32(a: &StringArray) -> Int32Array {
+    Int32Array::from(
+        (0..a.len())
+            .map(|i| {
+                if a.is_null(i) {
+                    return 0;
+                }
+                let s = a.value(i);
+                if let Some(h) = s.strip_prefix("0x") {
+                    i32::from_str_radix(h, 16).unwrap_or(0)
+                } else {
+                    s.parse::<i32>().unwrap_or_else(|_| {
+                        match s.to_ascii_uppercase().as_str() {
+                            "SUCCEEDED" | "SUCCESS" => 1,
+                            _ => 0,
+                        }
+                    })
+                }
+            })
+            .collect::<Vec<i32>>(),
+    )
 }
 
 /// Shared head columns for change tables: _block_num, block_hash, block_num, timestamp, tx_hash, ordinal, address.
@@ -377,4 +429,90 @@ fn map_calls(b: &RecordBatch) -> Result<RecordBatch, BoxError> {
         Arc::new(zero()),
     ];
     Ok(RecordBatch::try_new(sch("calls"), cols)?)
+}
+
+fn map_blocks(b: &RecordBatch) -> Result<RecordBatch, BoxError> {
+    let rows = b.num_rows();
+    let block_num = u64col(b, "block_num")?;
+    let dec128 = DataType::Decimal128(38, 0);
+    let fsb32 = DataType::FixedSizeBinary(32);
+    let cols: Vec<ArrayRef> = vec![
+        Arc::new(block_num.clone()),                 // _block_num
+        Arc::new(block_num),                         // block_num
+        Arc::new(ts_ns(&u64col(b, "timestamp")?)),   // timestamp
+        Arc::new(fsb(&utf8(b, "hash")?, 32)?),       // hash
+        Arc::new(fsb(&utf8(b, "parent_hash")?, 32)?),// parent_hash
+        Arc::new(fsb_zero(rows, 32)),                // ommers_hash (n/a)
+        Arc::new(fsb(&utf8(b, "coinbase")?, 20)?),   // miner
+        Arc::new(fsb(&utf8(b, "state_root")?, 32)?),
+        Arc::new(fsb(&utf8(b, "transactions_root")?, 32)?),
+        Arc::new(fsb(&utf8(b, "receipt_root")?, 32)?),
+        Arc::new(bin_empty(rows)),                   // logs_bloom (n/a)
+        Arc::new(dec(&utf8(b, "difficulty")?)?),     // difficulty
+        null_of(&dec128, rows),                      // total_difficulty
+        Arc::new(u64col(b, "gas_limit")?),
+        Arc::new(u64col(b, "gas_used")?),
+        Arc::new(bin(&utf8(b, "extra_data")?)),      // extra_data
+        Arc::new(fsb(&utf8(b, "mix_hash")?, 32)?),
+        Arc::new(u64col(b, "nonce")?),
+        Arc::new(dec(&utf8(b, "base_fee_per_gas")?)?), // base_fee (nullable)
+        null_of(&fsb32, rows),                       // withdrawals_root
+        null_of(&DataType::UInt64, rows),            // blob_gas_used
+        null_of(&DataType::UInt64, rows),            // excess_blob_gas
+        null_of(&fsb32, rows),                       // parent_beacon_root
+    ];
+    Ok(RecordBatch::try_new(sch("blocks"), cols)?)
+}
+
+fn map_transactions(b: &RecordBatch) -> Result<RecordBatch, BoxError> {
+    let rows = b.num_rows();
+    let block_num = u64col(b, "block_num")?;
+    let cols: Vec<ArrayRef> = vec![
+        Arc::new(block_num.clone()),                  // _block_num
+        Arc::new(fsb(&utf8(b, "block_id")?, 32)?),    // block_hash
+        Arc::new(block_num),                          // block_num
+        Arc::new(ts_ns(&u64col(b, "timestamp")?)),    // timestamp
+        Arc::new(u32col(b, "index")?),                // tx_index
+        Arc::new(fsb(&utf8(b, "hash")?, 32)?),        // tx_hash
+        Arc::new(fsb(&utf8(b, "to")?, 20)?),          // to (nullable)
+        Arc::new(u64col(b, "nonce")?),
+        Arc::new(dec(&utf8(b, "gas_price")?)?),       // gas_price (nullable)
+        Arc::new(u64col(b, "gas_limit")?),
+        Arc::new(dec(&utf8(b, "value")?)?),           // value (nullable)
+        Arc::new(bin(&utf8(b, "input")?)),
+        Arc::new(bin_empty(rows)),                    // v (n/a)
+        Arc::new(bin_empty(rows)),                    // r (n/a)
+        Arc::new(bin_empty(rows)),                    // s (n/a)
+        Arc::new(u64col(b, "gas_used")?),
+        Arc::new(parse_i32(&utf8(b, "type")?)),       // type
+        Arc::new(dec(&utf8(b, "max_fee_per_gas")?)?),
+        Arc::new(dec(&utf8(b, "max_priority_fee_per_gas")?)?),
+        Arc::new(fsb(&utf8(b, "from")?, 20)?),        // from
+        Arc::new(parse_i32(&utf8(b, "status")?)),     // status
+        Arc::new(bin_empty(rows)),                    // return_data (n/a)
+        Arc::new(bin_empty(rows)),                    // public_key (n/a)
+        Arc::new(u64_const(rows, 0)),                 // begin_ordinal
+        Arc::new(u64_const(rows, 0)),                 // end_ordinal
+    ];
+    Ok(RecordBatch::try_new(sch("transactions"), cols)?)
+}
+
+fn map_logs(b: &RecordBatch) -> Result<RecordBatch, BoxError> {
+    let block_num = u64col(b, "block_num")?;
+    let cols: Vec<ArrayRef> = vec![
+        Arc::new(block_num.clone()),                  // _block_num
+        Arc::new(fsb(&utf8(b, "block_id")?, 32)?),    // block_hash
+        Arc::new(block_num),                          // block_num
+        Arc::new(ts_ns(&u64col(b, "timestamp")?)),    // timestamp
+        Arc::new(fsb(&utf8(b, "tx_hash")?, 32)?),
+        Arc::new(u32col(b, "tx_index")?),
+        Arc::new(u32col(b, "log_index")?),
+        Arc::new(fsb(&utf8(b, "address")?, 20)?),
+        Arc::new(fsb(&utf8(b, "topic0")?, 32)?),
+        Arc::new(fsb(&utf8(b, "topic1")?, 32)?),
+        Arc::new(fsb(&utf8(b, "topic2")?, 32)?),
+        Arc::new(fsb(&utf8(b, "topic3")?, 32)?),
+        Arc::new(bin(&utf8(b, "data")?)),
+    ];
+    Ok(RecordBatch::try_new(sch("logs"), cols)?)
 }
