@@ -29,6 +29,7 @@ members = [
     "crates/services/admin-api",
     "crates/services/admin-api/gen",
     "crates/services/controller",
+    "crates/services/pgserver",
     "crates/services/server",
     "crates/services/worker",
     "tests",

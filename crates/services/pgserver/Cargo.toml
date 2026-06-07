@@ -1,0 +1,15 @@
+[package]
+name = "pgserver"
+edition.workspace = true
+version.workspace = true
+license-file.workspace = true
+
+[dependencies]
+common = { path = "../../core/common" }
+datafusion.workspace = true
+datafusion-postgres = "0.12.2"
+metadata-db = { path = "../../core/metadata-db" }
+monitoring = { path = "../../core/monitoring" }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["net"] }
+tracing.workspace = true
