@@ -275,6 +275,14 @@ picks the job back up from the metadata DB and continues from the last indexed b
 
 ---
 
+## Roadmap
+
+See [`ROADMAP.md`](./ROADMAP.md) — Postgres-wire endpoint, Parquet layout tuning, materialized
+decoded views, optional HyperSync ingest, and more, prioritised for camp's actual situation
+(one chain, one box, free, unique data). Reliability (off-box backup) is Phase 0.
+
+---
+
 ## Versioning
 
 camp-node is versioned **independently of upstream Amp.** `v0.1.0` is the first release of
