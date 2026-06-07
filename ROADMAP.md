@@ -177,6 +177,19 @@ through Pinax; this attacks the `evm-rpc` hot path, the query/serve layer, and D
   tools (or rely on quoted identifiers initially); `--pg-server` flag on `ampd dev`/`server`
   (default `127.0.0.1:5432`); **verify against psql + Grafana/DBeaver** (incl. their `pg_catalog`
   startup queries — the known datafusion-postgres rough edge). Read-only; refuse writes.
+- **Implementation facts traced (ready to build):** camp's loader is `catalog_for_sql` →
+  `get_physical_catalog(store, metadata_db, table_refs, func_refs, env)`; **`TableSnapshot`
+  already implements `TableProvider`** (it's passed straight to `ctx.register_table`), so no
+  wrapper needed. Two real frictions to handle: (1) `register_table` also calls
+  `ctx.register_object_store(table.url(), table.object_store())` per table — a dynamic
+  `SchemaProvider` can't touch the ctx, so **pre-register the (few) object stores** on the
+  pgwire ctx up front; (2) DataFusion `SchemaProvider::table_names()`/`schema_names()` are
+  **sync**, but listing datasets/tables needs an async metadata-DB query — keep a **periodically
+  refreshed cached list** for enumeration, and resolve the actual `TableProvider` lazily in the
+  async `table()` via `get_physical_catalog`. Decision: **delegate-handler vs dynamic-catalog** —
+  dynamic-catalog reuses all of `DfSessionService` (pg_catalog/extended/encoding) and only needs
+  the two frictions solved; prefer it. This is a focused build that must be psql-verified before
+  shipping — do it in a dedicated run, not bolted onto a long session.
 
 ## Always-true constraints
 
