@@ -103,15 +103,26 @@ impl Default for ParquetConfig {
     }
 }
 
-#[derive(Debug, Default, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct CollectorConfig {
-    /// Enable or disable the collector (default: false)
+    /// Enable or disable the collector (default: true — GC superseded files)
     pub active: bool,
     /// Interval in seconds to run the garbage collector (default: 30.0)
     pub min_interval: ConfigDuration<30>,
     /// Duration in seconds to hold deletion lock on compacted files (default: 1800.0 = 30 minutes)
     pub deletion_lock_duration: ConfigDuration<1800>,
+}
+
+impl Default for CollectorConfig {
+    fn default() -> Self {
+        // On by default to GC files the (now default-on) compactor supersedes.
+        Self {
+            active: true,
+            min_interval: ConfigDuration::default(),
+            deletion_lock_duration: ConfigDuration::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -133,7 +144,9 @@ pub struct CompactorConfig {
 impl Default for CompactorConfig {
     fn default() -> Self {
         Self {
-            active: false,
+            // On by default: the live deployment showed an unbounded file count
+            // when this defaults off. Operators can still disable it explicitly.
+            active: true,
             metadata_concurrency: 2,
             write_concurrency: 2,
             min_interval: ConfigDuration::default(),

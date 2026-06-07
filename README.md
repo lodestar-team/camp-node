@@ -194,9 +194,9 @@ url = "postgres://ampd:<pw>@localhost/ampd"  # auto_migrate defaults true
 
 [writer]
 compression = "zstd(1)"
-[writer.compactor]                            # NB: defaults OFF — enable it
+[writer.compactor]                            # on by default; shown for clarity
 active = true
-[writer.collector]                            # GC of superseded files
+[writer.collector]                            # GC of superseded files; on by default
 active = true
 ```
 

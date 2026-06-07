@@ -80,7 +80,7 @@ url = "postgres://<pg_url>"
 
 # File compactor
 [writer.compactor]
-# active = false                  # Enable or disable the compactor (default: false)
+# active = true                   # Enable or disable the compactor (default: true)
 # metadata_concurrency = 2        # Max concurrent metadata operations (default: 2)
 # write_concurrency = 2           # Max concurrent compaction write operations (default: 2)
 # min_interval = 1.0              # Interval in seconds to run the compactor (default: 1.0)
@@ -91,6 +91,6 @@ url = "postgres://<pg_url>"
 
 # Garbage collector
 [writer.collector]
-# active = false                   # Enable or disable the collector (default: false)
+# active = true                    # Enable or disable the collector (default: true)
 # min_interval = 30.0              # Interval in seconds to run the garbage collector (default: 30.0)
 # deletion_lock_duration = 1800.0  # Duration in seconds to hold deletion lock on compacted files (default: 1800.0 = 30 minutes)

@@ -48,9 +48,12 @@ through Pinax; this attacks the `evm-rpc` hot path, the query/serve layer, and D
 - [ ] Materialized decoded views (`materialized_view` manifest kind + bundled views)
 - [ ] Lift streaming-SQL limits (JSON Lines blocking-plan path)
 - [ ] Flight SQL on the Flight server
-- [ ] Enable compactor by default
+- [x] Enable compactor + collector by default (Rust defaults + sample config + README)
 - [ ] Allocator benchmark (mimalloc / jemalloc / snmalloc) + pick winner
-- [ ] Parquet footer cache (LRU)
+- [x] Parquet footer cache — **already implemented** (`catalog/reader.rs`: footers in
+  Postgres + `foyer` metadata cache; better than the roadmap assumed → file count is not a
+  query-latency problem). Remaining compactor tuning (size-tiered, raise `eager_compaction_limit`
+  to coalesce the 16KB-median tail) is a separate, lower-urgency item.
 
 **Tier 2 — cheaper / faster ingest**
 - [ ] HyperSync extractor (`crates/extractors/evm-hypersync`, opt-in, no-vendor default kept)
