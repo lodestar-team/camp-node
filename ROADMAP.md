@@ -158,12 +158,25 @@ through Pinax; this attacks the `evm-rpc` hot path, the query/serve layer, and D
   (`datafusion_ctx` + `register_table` / `create_catalog_schema` / `register_udfs`) — the same
   machinery `flight`/`jsonl` use — to produce a `SessionContext`, then `setup_pg_catalog(ctx)`
   + `serve(ctx, ServerOptions)`.
-- Design decisions to make: (1) pgwire holds a **persistent** context, but camp registers
-  tables per-query by dataset ref — build a context with **all current datasets pre-registered
-  as catalog schemas**, refreshed when datasets change; (2) map camp's `"ns/name@ver".table`
-  to clean Postgres `schema.table` (e.g. schema `arbitrum_one`, table `blocks`) so BI tools see
-  normal names; (3) **read-only** — refuse writes; conservative on cancellation. New crate
-  `crates/services/pgserver`, `--pg-server` flag on `ampd dev`/`server`, default `127.0.0.1:5432`.
+- **STATUS: foundation done + verified.** `crates/services/pgserver` exists and compiles;
+  `datafusion-postgres 0.12.2` resolves cleanly on our exact DataFusion 50.3.0 (unified, no
+  second copy) + arrow 56 / arrow-pg 0.8.1; `serve(ctx, opts, AuthManager)` wrapper wired
+  (no-auth default, localhost bind).
+- **KEY DESIGN FINDING (the real work).** `serve()` wants ONE static `SessionContext` with all
+  tables pre-registered. camp does the opposite: `server::flight::execute_query` runs
+  `catalog_for_sql(sql)` → infers which datasets the SQL references → loads ONLY those → builds
+  a **fresh `QueryContext` (catalog snapshot) per query**. So a static `serve()` is wrong on
+  two counts: freshness (snapshot per query) AND on-demand catalog loading. **Do not** pre-build
+  a giant static context.
+- **Correct approach:** use datafusion-postgres for the **wire layer only** — `serve_with_handlers`
+  with a custom `PgWireServerHandlers` (or a `QueryHook`) whose query path **delegates to camp's
+  existing `execute_query`** (catalog_for_sql → QueryContext → execute), then encodes the result
+  `RecordBatch`es to the pg wire format via the re-exported `arrow_pg`. This reuses camp's exact,
+  correct, fresh query pipeline and borrows only pgwire's protocol + `pg_catalog` emulation.
+- Remaining: implement that handler; map `"ns/name@ver".table` → clean `schema.table` for BI
+  tools (or rely on quoted identifiers initially); `--pg-server` flag on `ampd dev`/`server`
+  (default `127.0.0.1:5432`); **verify against psql + Grafana/DBeaver** (incl. their `pg_catalog`
+  startup queries — the known datafusion-postgres rough edge). Read-only; refuse writes.
 
 ## Always-true constraints
 
