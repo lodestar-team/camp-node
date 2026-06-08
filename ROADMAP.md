@@ -49,7 +49,7 @@ through Pinax; this attacks the `evm-rpc` hot path, the query/serve layer, and D
 - [ ] Lift streaming-SQL limits (JSON Lines blocking-plan path)
 - [ ] Flight SQL on the Flight server
 - [x] Enable compactor + collector by default (Rust defaults + sample config + README)
-- [ ] Allocator benchmark (mimalloc / jemalloc / snmalloc) + pick winner
+- [x] Allocator benchmark (mimalloc / jemalloc / snmalloc) + pick winner — **done; keep snmalloc**. Benchmarked all four (system / snmalloc / mimalloc / jemalloc) on the live query workload (8 queries × 25 iters, warm cache). Spread is within run-to-run noise (~1ms p50, ~1.5ms tails): snmalloc best tails (p95 6.9 / p99 8.2 ms), jemalloc best mean/p50 (4.7 / 4.1 ms) and lowest RSS (171 vs snmalloc's 209 MB), system worst latency. **Negative result: allocator choice is not a meaningful lever for camp's query latency** — keep snmalloc (best tails, already default). mimalloc/jemalloc are now selectable via Cargo features (`--no-default-features --features {mimalloc,jemalloc}`); jemalloc is the RSS-optimal pick for memory-tight hosts. A heavier concurrent/writer-path stress test would be needed before any switch.
 - [x] Parquet footer cache — **already implemented** (`catalog/reader.rs`: footers in
   Postgres + `foyer` metadata cache; better than the roadmap assumed → file count is not a
   query-latency problem). Remaining compactor tuning (size-tiered, raise `eager_compaction_limit`
