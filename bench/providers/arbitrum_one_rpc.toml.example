@@ -1,0 +1,8 @@
+# Copy to arbitrum_one_rpc.toml and set your RPC URL. Same provider config is used for
+# BOTH targets so the backfill comparison is apples-to-apples.
+name    = "arbitrum-one"
+kind    = "evm-rpc"
+network = "arbitrum-one"
+url     = "<YOUR_ARBITRUM_ONE_RPC_URL>"
+rpc_batch_size           = 10   # Arbitrum trips -32003 at 50/100 on full blocks+receipts
+concurrent_request_limit = 10
