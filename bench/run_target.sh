@@ -64,6 +64,11 @@ done
 T1=$(date +%s.%N)
 ELAPSED=$(echo "$T1 - $T0" | bc)
 
+# let compaction/collection settle before counting files (compactor runs on an interval), then count
+SETTLE=${SETTLE:-45}
+sleep "$SETTLE"
+PARQUET_FILES=$(find "$ROOT/data" -name '*.parquet' 2>/dev/null | wc -l)
+
 # resolve the actual daemon pid via the admin port (robust to taskset/fork), capture metrics
 DPID=$(ss -ltnp 2>/dev/null | grep ":$ADMIN" | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
 DPID=${DPID:-$PID}
@@ -82,6 +87,7 @@ RSS_MB=$(echo "scale=0; ${VMHWM_KB:-0} / 1024" | bc)
   echo "backfill_secs=$ELAPSED  blocks_per_sec=$BPS"
   echo "peak_rss_mb=$RSS_MB  cpu_secs=$CPU_SECS"
   echo "storage_bytes=$STORAGE  bytes_per_block=$BPB"
+  echo "parquet_files=$PARQUET_FILES  (after ${SETTLE}s compaction settle)"
 } | tee "$RESULT"
 
 kill $PID 2>/dev/null; wait $PID 2>/dev/null

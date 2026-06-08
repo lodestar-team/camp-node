@@ -117,7 +117,7 @@ The claim that holds up: *"camp-node is ahead of the Amp it forked on openness, 
 | Peak RSS | **150 MB** | 157 MB | ~4% lower |
 | CPU-seconds | **2.0 s** | 2.6 s | ~23% lower |
 | On-disk bytes/block | **1931** | 1990 | ~3% smaller |
-| Parquet files (post-compaction) | **3** | uncompacted (compaction off) | — |
+| Parquet files (post-compaction, both compaction-on) | 3 | 3 | parity — both compact |
 
 Per-run dispersion (blk·s⁻¹): camp **113.2 / 115.8 / 110.7** (very tight); amp **97.7 / 99.6 / 81.7**. amp's run-3 dip to 81.7 is **RPC-provider variance**, not an indexer change — and is exactly why this axis must be reported with dispersion and treated as RPC-bound (see caveats). Bytes/block was **identical across runs per target** (deterministic: same window ⇒ same data ⇒ same compression).
 
@@ -129,9 +129,9 @@ Per-run dispersion (blk·s⁻¹): camp **113.2 / 115.8 / 110.7** (very tight); a
 
 - **CPU-seconds — low for both.** RPC-bound ⇒ the process is mostly idle-waiting on network, so user+system CPU is small relative to wall-clock. Compaction adds a little camp-side CPU (it runs by default).
 
-- **Storage bytes/block — near-identical, by construction.** Both write the **same schema** through the **same Parquet writer with `zstd(1)`** (camp inherited it), so on-disk size is essentially the same. camp's default-on **Bloom filters add a few KB per file** — yet bytes/block stays ≈ equal, which is the point: *the bloom-filter index overhead is negligible*, and camp's default-on compaction keeps it from ballooning.
+- **Storage bytes/block — near-identical.** Both write the **same schema** through the **same Parquet writer with `zstd(1)`** (camp inherited it), so on-disk size is essentially the same; the ~3% camp edge is a minor schema/encoding difference, not a compaction effect (see file count). camp's default-on **Bloom filters add a few KB per file** yet bytes/block stays ≈ equal — *the bloom-filter index overhead is negligible*.
 
-- **File count / steady-state efficiency — real camp win.** With compactor+collector **on by default**, camp merged the window into a handful of files (≈3) and GCs superseded ones; **amp v0.0.36 ships compaction off**, so an equivalent long-running deployment accumulates many small files that degrade query planning and listing over time. This doesn't show in a short backfill's bytes/block but is the operationally meaningful difference — and it's why camp's prod file-count problem was the thing the default-on flip fixed.
+- **File count — parity on this benchmark (both = 3 files); the compaction advantage is steady-state, not bulk-backfill.** *Measured:* with compaction enabled for both, camp **and** amp v0.0.36 each settled to exactly **3 parquet files** (one per blocks/logs/transactions) — amp's compactor works when on. So this bulk backfill shows **no file-count difference**. camp's real edge is a **defaults** one: camp ships compactor+collector **on**, amp ships them **off** — which matters for a **long-running tip-following** deployment (each poll writes a small file; without default-on compaction they pile up and degrade query planning — exactly camp's old prod file-count problem). A bulk backfill writes few files regardless, so it does **not** exercise that difference; don't quote a file-count win from this benchmark.
 
 - **Query latency — camp wins on *capability*, not just speed.** A fair head-to-head can only use **Arrow Flight** (the only interface amp v0.0.36 and camp share). On Flight the engines are at parity (same DataFusion). camp's advantage is that it *also* answers **JSON Lines and Postgres-wire** — interfaces amp v0.0.36 can't speak at all — so "query latency on pgwire/JSONL" is a camp-only column, a capability gap rather than a benchmark win. (camp's footer-cache + default-on Bloom filters do help selective queries prune row groups, which would show on dense-window point lookups — measure before claiming.)
 
