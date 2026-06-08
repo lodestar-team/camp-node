@@ -7569,11 +7569,13 @@ dependencies = [
 name = "pgserver"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "common",
  "datafusion",
  "datafusion-postgres",
+ "dataset-store",
+ "datasets-common",
  "metadata-db",
- "monitoring",
  "thiserror 2.0.17",
  "tokio",
  "tracing",
@@ -9435,6 +9437,7 @@ dependencies = [
  "futures",
  "metadata-db",
  "monitoring",
+ "pgserver",
  "prost 0.13.5",
  "rand 0.9.2",
  "serde_json",

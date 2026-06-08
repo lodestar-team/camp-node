@@ -16,6 +16,7 @@ pub async fn run(
     addrs: &Addrs,
     flight_server: bool,
     jsonl_server: bool,
+    pg_at: Option<std::net::SocketAddr>,
 ) -> Result<(), Error> {
     let metadata_db = config
         .metadata_db()
@@ -65,6 +66,7 @@ pub async fn run(
         meter,
         flight_at,
         jsonl_at,
+        pg_at,
     )
     .await
     .map_err(|err| Error::ServerStart(Box::new(err)))?;
@@ -74,6 +76,9 @@ pub async fn run(
     }
     if let Some(addr) = addrs.jsonl_addr {
         tracing::info!("JSON Lines server running at {}", addr);
+    }
+    if let Some(addr) = addrs.pg_addr {
+        tracing::info!("Postgres-wire server running at {}", addr);
     }
 
     server.await.map_err(Error::ServerRuntime)

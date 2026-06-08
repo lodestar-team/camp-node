@@ -4,25 +4,122 @@
 //! PostgreSQL wire protocol, so BI tools (Grafana, Metabase, DBeaver, psql, …) connect
 //! natively. Read-only. Built on `datafusion-postgres` (pinned to the DataFusion-50 line
 //! that matches this workspace).
+//!
+//! camp resolves its catalog per-query from the parsed SQL, whereas the pgwire layer drives a
+//! single long-lived [`SessionContext`]. We bridge the two with a dynamic catalog
+//! ([`catalog::CampCatalog`]) backed by a periodically-refreshed snapshot, plus `pg_catalog`
+//! emulation so BI clients can introspect. See [`catalog`] for details.
+
+mod catalog;
 
 use std::sync::Arc;
+use std::time::Duration;
 
-use datafusion::prelude::SessionContext;
+use datafusion::execution::context::SessionContext;
+use datafusion::prelude::SessionConfig;
+use datafusion_postgres::datafusion_pg_catalog::pg_catalog::context::EmptyContextProvider;
+use datafusion_postgres::datafusion_pg_catalog::setup_pg_catalog;
 use datafusion_postgres::{ServerOptions, auth::AuthManager, serve};
+
+use common::query_context::QueryEnv;
+use dataset_store::DatasetStore;
+use metadata_db::MetadataDb;
+
+use catalog::{CampCatalog, SharedCatalog};
+
+/// Default interval at which the dynamic catalog is rebuilt from the metadata DB.
+const DEFAULT_REFRESH: Duration = Duration::from_secs(30);
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("pg server: {0}")]
     Serve(String),
+
+    #[error("pg_catalog setup: {0}")]
+    PgCatalog(String),
 }
 
-/// Serve a Postgres-wire endpoint over the given DataFusion context.
-/// Blocks until the listener stops.
-pub async fn run(ctx: Arc<SessionContext>, addr: &str) -> Result<(), Error> {
+/// Build the long-lived serving context: a dynamic camp catalog + pg_catalog emulation + camp UDFs.
+fn build_context(shared: SharedCatalog) -> Result<Arc<SessionContext>, Error> {
+    let config = SessionConfig::new()
+        .with_information_schema(true)
+        // We register our own "amp" catalog below; don't let DataFusion create a memory one.
+        .with_create_default_catalog_and_schema(false)
+        .with_default_catalog_and_schema("amp", "public");
+
+    let ctx = SessionContext::new_with_config(config);
+
+    // The dynamic camp catalog. pg_catalog registers itself into this same ("amp") catalog.
+    ctx.register_catalog("amp", Arc::new(CampCatalog::new(shared)));
+
+    setup_pg_catalog(&ctx, "amp", EmptyContextProvider)
+        .map_err(|e| Error::PgCatalog(e.to_string()))?;
+
+    // camp's EVM UDFs (evm_decode_log, evm_topic, encode/decode params, …) so they work over pgwire.
+    for udf in common::query_context::udfs() {
+        ctx.register_udf(udf);
+    }
+    for udaf in common::query_context::udafs() {
+        ctx.register_udaf(udaf);
+    }
+
+    Ok(Arc::new(ctx))
+}
+
+/// Serve a Postgres-wire endpoint over camp's query layer. Blocks until the listener stops.
+///
+/// `store`/`metadata_db`/`env` are the same handles the Flight `Service` holds; share clones.
+pub async fn run(
+    store: DatasetStore,
+    metadata_db: MetadataDb,
+    env: QueryEnv,
+    addr: &str,
+) -> Result<(), Error> {
+    run_with_refresh(store, metadata_db, env, addr, DEFAULT_REFRESH).await
+}
+
+pub async fn run_with_refresh(
+    store: DatasetStore,
+    metadata_db: MetadataDb,
+    env: QueryEnv,
+    addr: &str,
+    refresh: Duration,
+) -> Result<(), Error> {
+    let shared = SharedCatalog::new();
+    let ctx = build_context(shared.clone())?;
+
+    // Prime the catalog before accepting connections so the first client sees tables.
+    match catalog::refresh_once(&shared, &ctx, &store, &metadata_db, &env).await {
+        Ok(n) => tracing::info!(tables = n, "pgserver: initial catalog loaded"),
+        Err(e) => {
+            tracing::warn!(error = %e, "pgserver: initial catalog refresh failed (will retry)")
+        }
+    }
+
+    // Background refresh keeps the catalog fresh as the chain advances / datasets change.
+    {
+        let shared = shared.clone();
+        let ctx = ctx.clone();
+        let store = store.clone();
+        let metadata_db = metadata_db.clone();
+        let env = env.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(refresh);
+            tick.tick().await; // consume the immediate first tick
+            loop {
+                tick.tick().await;
+                match catalog::refresh_once(&shared, &ctx, &store, &metadata_db, &env).await {
+                    Ok(n) => tracing::debug!(tables = n, "pgserver: catalog refreshed"),
+                    Err(e) => tracing::warn!(error = %e, "pgserver: catalog refresh failed"),
+                }
+            }
+        });
+    }
+
     let (host, port) = split_addr(addr);
     let opts = ServerOptions::new().with_host(host).with_port(port);
-    // Default = no password auth. The endpoint binds localhost; the public edge
-    // (engine.camp) terminates auth + rate-limits, as it does for Flight/JSON Lines.
+    // No password auth: the endpoint binds localhost and the public edge (engine.camp) terminates
+    // auth + rate-limits, exactly as it does for Flight / JSON Lines.
     let auth = Arc::new(AuthManager::new());
     tracing::info!(%addr, "starting postgres-wire endpoint (read-only)");
     serve(ctx, &opts, auth)

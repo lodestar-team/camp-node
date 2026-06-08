@@ -3,7 +3,7 @@
 **The indexing engine behind [camp](https://github.com/lodestar-team/camp) / [engine.camp](https://engine.camp).**
 camp-node turns a raw blockchain JSON-RPC endpoint into a queryable, columnar SQL
 database — it extracts blocks/transactions/logs, stores them as Parquet, and serves
-them over Arrow Flight and JSON Lines. It is built and run **from source we can read,
+them over Arrow Flight, JSON Lines, and the Postgres wire protocol. It is built and run **from source we can read,
 pin, and patch**, so engine.camp never depends on a prebuilt closed-source binary.
 
 > **Provenance & attribution.** camp-node is built on **Amp**, the blockchain-native
@@ -102,7 +102,7 @@ finalized blocks only.
 
 ## Query interfaces
 
-Both servers run the same DataFusion engine; pick the wire format you want.
+All three frontends run the same DataFusion engine; pick the wire format you want.
 
 **JSON Lines over HTTP** — POST a raw SQL string, get one JSON object per result row:
 
@@ -113,6 +113,21 @@ curl -X POST http://localhost:1603 \
 
 **Arrow Flight (gRPC, FlightSQL)** — wrap SQL in a `CommandStatementQuery`, stream Arrow
 record batches back. High-throughput; used by the Python client and BI connectors.
+
+**Postgres wire protocol** *(read-only)* — connect any Postgres client or BI tool (psql,
+Grafana, Metabase, DBeaver) directly. Enable with `--pg-server` (off by default):
+
+```sh
+ampd --config camp.toml server --pg-server 127.0.0.1:5432
+psql -h 127.0.0.1 -p 5432 -d amp \
+  -c 'SELECT count(*) FROM "_/arbitrum_one@1.0.0"."blocks";'
+```
+
+Each dataset (`namespace/name@version`) is exposed as a Postgres *schema* and each of its
+tables as a relation, so qualify with quoted identifiers: `"_/eth@1.0.0"."blocks"`. The
+engine's EVM UDFs (e.g. `evm_topic`, `evm_decode_log`) and `pg_catalog`/`information_schema`
+introspection are available, so BI tools can browse the schema natively. The catalog refreshes
+in the background as the chain advances. Writes (DDL/DML) are rejected.
 
 ### EVM user-defined functions
 
@@ -147,13 +162,14 @@ everything (`ampd dev`); production can split server/controller/workers across h
 
 | Command | Role |
 |---------|------|
-| `ampd dev` | **All-in-one** single process: controller (Admin API) + query servers (Flight + JSON Lines) + an in-process worker. The single-box mode. |
-| `ampd server` | Query servers only (`--flight-server`, `--jsonl-server`). |
+| `ampd dev` | **All-in-one** single process: controller (Admin API) + query servers (Flight + JSON Lines) + an in-process worker. The single-box mode. Add `--pg-server` for the Postgres-wire endpoint. |
+| `ampd server` | Query servers only (`--flight-server`, `--jsonl-server`, `--pg-server`). |
 | `ampd controller` | Controller + Admin API (scheduling, dataset/provider/job management). |
 | `ampd worker --node-id <id>` | A distributed extraction/materialization worker. |
 | `ampd migrate` | Run metadata-DB migrations. |
 
 Default ports (configurable): Arrow Flight `1602`, JSON Lines `1603`, Admin API `1610`.
+The Postgres-wire endpoint is opt-in via `--pg-server` (bare flag → `127.0.0.1:5432`).
 
 ### `ampctl` (operator CLI)
 
@@ -277,9 +293,10 @@ picks the job back up from the metadata DB and continues from the last indexed b
 
 ## Roadmap
 
-See [`ROADMAP.md`](./ROADMAP.md) — Postgres-wire endpoint, Parquet layout tuning, materialized
-decoded views, optional HyperSync ingest, and more, prioritised for camp's actual situation
-(one chain, one box, free, unique data). Reliability (off-box backup) is Phase 0.
+See [`ROADMAP.md`](./ROADMAP.md) — Parquet layout tuning, materialized decoded views, optional
+HyperSync ingest, and more, prioritised for camp's actual situation (one chain, one box, free,
+unique data). Reliability (off-box backup) is Phase 0. The Postgres-wire endpoint, default-on
+Bloom filters, and default-on compactor have shipped.
 
 ---
 

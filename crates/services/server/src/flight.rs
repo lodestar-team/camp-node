@@ -92,6 +92,22 @@ impl Service {
         })
     }
 
+    /// Clone of the query environment (memory pools, footer cache, …). Used to start auxiliary
+    /// query frontends (e.g. the Postgres-wire endpoint) that share this service's resources.
+    pub fn query_env(&self) -> QueryEnv {
+        self.env.clone()
+    }
+
+    /// Clone of the dataset store handle.
+    pub fn dataset_store(&self) -> DatasetStore {
+        self.dataset_store.clone()
+    }
+
+    /// Clone of the metadata DB handle.
+    pub fn metadata_db(&self) -> MetadataDb {
+        self.metadata_db.clone()
+    }
+
     pub async fn execute_query(
         &self,
         sql: impl AsRef<SqlStr>,

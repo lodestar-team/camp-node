@@ -14,6 +14,7 @@ pub async fn run(
     flight_server: bool,
     jsonl_server: bool,
     admin_server: bool,
+    pg_at: Option<std::net::SocketAddr>,
 ) -> Result<(), Error> {
     let worker_id = "worker".parse().expect("Invalid worker ID");
 
@@ -54,7 +55,10 @@ pub async fn run(
     };
 
     // Spawn server only if at least one query server is enabled
-    let server_fut: Pin<Box<dyn Future<Output = _> + Send>> = if flight_server || jsonl_server {
+    let server_fut: Pin<Box<dyn Future<Output = _> + Send>> = if flight_server
+        || jsonl_server
+        || pg_at.is_some()
+    {
         let flight_at = if flight_server {
             Some(config.addrs.flight_addr)
         } else {
@@ -74,6 +78,7 @@ pub async fn run(
             meter.clone(),
             flight_at,
             jsonl_at,
+            pg_at,
         )
         .await
         .map_err(|err| Error::ServerRun(Box::new(err)))?;
@@ -83,6 +88,9 @@ pub async fn run(
         }
         if let Some(addr) = addrs.jsonl_addr {
             tracing::info!("JSON Lines Server running at {}", addr);
+        }
+        if let Some(addr) = addrs.pg_addr {
+            tracing::info!("Postgres-wire Server running at {}", addr);
         }
 
         Box::pin(fut)

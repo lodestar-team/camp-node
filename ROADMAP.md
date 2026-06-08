@@ -43,7 +43,7 @@ through Pinax; this attacks the `evm-rpc` hot path, the query/serve layer, and D
 - [~] Off-box backup + tested restore — tooling done & verified (`ops/backup.sh`, `ops/restore.sh`); **needs an off-box remote configured** (rclone + `restic init`) to go live
 
 **Tier 1 — serve the live service**
-- [ ] Postgres-wire endpoint (`crates/services/pgserver`, pgwire + datafusion-postgres)
+- [x] Postgres-wire endpoint (`crates/services/pgserver`, pgwire + datafusion-postgres) — **shipped & psql-verified** (v0.5.0). Dynamic catalog over the metadata DB + `pg_catalog` emulation; `--pg-server` flag on `ampd dev`/`server`. Verified: psql connects, `information_schema`/`pg_catalog` introspection works, real queries + camp EVM UDFs run, and results match the JSONL path **exactly** (blocks 2001, calls 26080, evm_topic 182).
 - [x] Parquet Bloom filters — default-on, per-column (`address`/`topic0-3`/`tx_hash`/`block_hash`), verified present in written files + query correctness. (Sort-by-address intentionally skipped: bloom subsumes it for equality filters and sorting would hurt `block_num` range-pruning.)
 - [ ] Materialized decoded views (`materialized_view` manifest kind + bundled views)
 - [ ] Lift streaming-SQL limits (JSON Lines blocking-plan path)
@@ -150,46 +150,33 @@ through Pinax; this attacks the `evm-rpc` hot path, the query/serve layer, and D
 
 ## Build notes (de-risked, ready to execute)
 
-**pgwire endpoint (Tier 1 #1) — feasibility confirmed.**
-- Use **`datafusion-postgres` 0.12.2** — it requires `datafusion ^50`, an exact match for our
-  workspace (DataFusion 50.3.0, arrow 56.2.0). 0.13+ track DF51–53; do **not** bump them
-  without a DataFusion upgrade. Pulls `pgwire` transitively.
-- Reuse the existing context builder in `crates/core/common/src/query_context.rs`
-  (`datafusion_ctx` + `register_table` / `create_catalog_schema` / `register_udfs`) — the same
-  machinery `flight`/`jsonl` use — to produce a `SessionContext`, then `setup_pg_catalog(ctx)`
-  + `serve(ctx, ServerOptions)`.
-- **STATUS: foundation done + verified.** `crates/services/pgserver` exists and compiles;
-  `datafusion-postgres 0.12.2` resolves cleanly on our exact DataFusion 50.3.0 (unified, no
-  second copy) + arrow 56 / arrow-pg 0.8.1; `serve(ctx, opts, AuthManager)` wrapper wired
-  (no-auth default, localhost bind).
-- **KEY DESIGN FINDING (the real work).** `serve()` wants ONE static `SessionContext` with all
-  tables pre-registered. camp does the opposite: `server::flight::execute_query` runs
-  `catalog_for_sql(sql)` → infers which datasets the SQL references → loads ONLY those → builds
-  a **fresh `QueryContext` (catalog snapshot) per query**. So a static `serve()` is wrong on
-  two counts: freshness (snapshot per query) AND on-demand catalog loading. **Do not** pre-build
-  a giant static context.
-- **Correct approach:** use datafusion-postgres for the **wire layer only** — `serve_with_handlers`
-  with a custom `PgWireServerHandlers` (or a `QueryHook`) whose query path **delegates to camp's
-  existing `execute_query`** (catalog_for_sql → QueryContext → execute), then encodes the result
-  `RecordBatch`es to the pg wire format via the re-exported `arrow_pg`. This reuses camp's exact,
-  correct, fresh query pipeline and borrows only pgwire's protocol + `pg_catalog` emulation.
-- Remaining: implement that handler; map `"ns/name@ver".table` → clean `schema.table` for BI
-  tools (or rely on quoted identifiers initially); `--pg-server` flag on `ampd dev`/`server`
-  (default `127.0.0.1:5432`); **verify against psql + Grafana/DBeaver** (incl. their `pg_catalog`
-  startup queries — the known datafusion-postgres rough edge). Read-only; refuse writes.
-- **Implementation facts traced (ready to build):** camp's loader is `catalog_for_sql` →
-  `get_physical_catalog(store, metadata_db, table_refs, func_refs, env)`; **`TableSnapshot`
-  already implements `TableProvider`** (it's passed straight to `ctx.register_table`), so no
-  wrapper needed. Two real frictions to handle: (1) `register_table` also calls
-  `ctx.register_object_store(table.url(), table.object_store())` per table — a dynamic
-  `SchemaProvider` can't touch the ctx, so **pre-register the (few) object stores** on the
-  pgwire ctx up front; (2) DataFusion `SchemaProvider::table_names()`/`schema_names()` are
-  **sync**, but listing datasets/tables needs an async metadata-DB query — keep a **periodically
-  refreshed cached list** for enumeration, and resolve the actual `TableProvider` lazily in the
-  async `table()` via `get_physical_catalog`. Decision: **delegate-handler vs dynamic-catalog** —
-  dynamic-catalog reuses all of `DfSessionService` (pg_catalog/extended/encoding) and only needs
-  the two frictions solved; prefer it. This is a focused build that must be psql-verified before
-  shipping — do it in a dedicated run, not bolted onto a long session.
+**pgwire endpoint (Tier 1 #1) — SHIPPED in v0.5.0, psql-verified.**
+- Built on **`datafusion-postgres` 0.12.2** (requires `datafusion ^50` — exact match for our
+  DataFusion 50.3.0 / arrow 56.2.0; pulls `pgwire` + `arrow-pg` + `datafusion-pg-catalog`).
+  0.13+ track DF51–53; do **not** bump without a DataFusion upgrade.
+- **Architecture (what we built):** a **dynamic catalog** — `pgserver::catalog::CampCatalog` /
+  `CampSchema` implement DataFusion's `CatalogProvider`/`SchemaProvider`, backed by an `ArcSwap`-style
+  snapshot. A background task (every 30s) lists datasets via `dataset_store.list_all_datasets()`,
+  resolves each table through camp's own `catalog_for_sql` → `CatalogSnapshot::from_catalog`, and
+  publishes a `{schema → {table → Arc<TableSnapshot>}}` map. `setup_pg_catalog` is layered over the
+  same `"amp"` catalog so BI clients can introspect; camp's EVM UDFs are registered on the ctx; the
+  whole thing is handed to `datafusion-postgres`'s `serve()`, reusing its entire wire/extended-query/
+  `pg_catalog` implementation. Read-only (`SessionConfig` + camp's plan visitors reject DDL/DML).
+- **Why dynamic-catalog beat the delegate-handler idea:** it reuses *all* of `DfSessionService`
+  (protocol, extended queries, encoding, `pg_catalog`) and only had to solve two frictions —
+  (1) object stores are pre-registered on the serving ctx during each refresh; (2) the sync
+  `table_names()`/`schema_names()` read from the cached snapshot while async `table()` returns the
+  live `Arc<TableSnapshot>` (which **already implements `TableProvider`**, no wrapper). One bad/empty
+  dataset can't blank the catalog — per-dataset errors are logged and skipped.
+- **`--pg-server [addr]`** flag on `ampd dev` and `ampd server` (bare flag → `127.0.0.1:5432`;
+  opt-in, off by default). Shares the Flight service's `env`/`store`/`metadata_db`.
+- **Verified against psql** on the dev instance: connect ✓, `SELECT version()` ✓,
+  `information_schema.schemata`/`.tables`/`.columns` introspection ✓ (full arrow→pg column types),
+  real queries across all 8 full-instrumentation tables ✓, `GROUP BY`/filters ✓, camp's `evm_topic`
+  UDF ✓. **Parity with the JSONL path is exact:** blocks `2001`, calls `26080`, Transfer logs `182`
+  on both. 18 tables loaded; empty/messy test datasets skipped gracefully.
+- **Not yet exposed publicly.** The capability ships in the engine binary; exposing a pg port at the
+  engine.camp edge (+ deploying the new binary) is a separate, deferred ops step.
 
 ## Always-true constraints
 

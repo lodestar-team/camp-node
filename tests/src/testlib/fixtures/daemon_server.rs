@@ -61,6 +61,7 @@ impl DaemonServer {
             meter,
             flight_at,
             jsonl_at,
+            None, // pg_at: Postgres-wire endpoint not used in tests
         )
         .await?;
 

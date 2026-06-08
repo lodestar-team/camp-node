@@ -34,6 +34,10 @@ enum Command {
         /// Enable Admin API Server.
         #[arg(long, env = "ADMIN_SERVER")]
         admin_server: bool,
+        /// Enable the read-only Postgres-wire Server. Optionally pass a bind address;
+        /// defaults to 127.0.0.1:5432 when given as a bare flag.
+        #[arg(long, env = "PG_SERVER", num_args = 0..=1, default_missing_value = "127.0.0.1:5432")]
+        pg_server: Option<String>,
     },
     Server {
         /// Enable Arrow Flight RPC Server.
@@ -42,6 +46,10 @@ enum Command {
         /// Enable JSON Lines Server.
         #[arg(long, env = "JSONL_SERVER")]
         jsonl_server: bool,
+        /// Enable the read-only Postgres-wire Server. Optionally pass a bind address;
+        /// defaults to 127.0.0.1:5432 when given as a bare flag.
+        #[arg(long, env = "PG_SERVER", num_args = 0..=1, default_missing_value = "127.0.0.1:5432")]
+        pg_server: Option<String>,
     },
     Worker {
         /// The node id of the worker.
@@ -90,9 +98,13 @@ async fn main_inner() -> Result<(), BoxError> {
             mut flight_server,
             mut jsonl_server,
             mut admin_server,
+            pg_server,
         } => {
-            // If neither of the flags are set, enable all servers
-            if !flight_server && !jsonl_server && !admin_server {
+            let pg_at = parse_pg_addr(pg_server)?;
+
+            // If none of the server flags are set, enable the default set (Flight + JSONL + Admin).
+            // The Postgres-wire endpoint stays opt-in.
+            if !flight_server && !jsonl_server && !admin_server && pg_at.is_none() {
                 flight_server = true;
                 jsonl_server = true;
                 admin_server = true;
@@ -102,16 +114,26 @@ async fn main_inner() -> Result<(), BoxError> {
 
             let (_providers, meter) = monitoring::init(config.opentelemetry.as_ref())?;
 
-            dev_cmd::run(config, meter, flight_server, jsonl_server, admin_server)
-                .await
-                .map_err(Into::into)
+            dev_cmd::run(
+                config,
+                meter,
+                flight_server,
+                jsonl_server,
+                admin_server,
+                pg_at,
+            )
+            .await
+            .map_err(Into::into)
         }
         Command::Server {
             mut flight_server,
             mut jsonl_server,
+            pg_server,
         } => {
-            // If neither of the flags are set, enable both servers
-            if !flight_server && !jsonl_server {
+            let pg_at = parse_pg_addr(pg_server)?;
+
+            // If no query-server flags are set, enable Flight + JSONL. Postgres-wire stays opt-in.
+            if !flight_server && !jsonl_server && pg_at.is_none() {
                 flight_server = true;
                 jsonl_server = true;
             }
@@ -121,7 +143,7 @@ async fn main_inner() -> Result<(), BoxError> {
 
             let (_providers, meter) = monitoring::init(config.opentelemetry.as_ref())?;
 
-            server_cmd::run(config, meter, &addrs, flight_server, jsonl_server)
+            server_cmd::run(config, meter, &addrs, flight_server, jsonl_server, pg_at)
                 .await
                 .map_err(Into::into)
         }
@@ -154,6 +176,16 @@ async fn main_inner() -> Result<(), BoxError> {
             migrate_cmd::run(config).await.map_err(Into::into)
         }
     }
+}
+
+/// Parse the optional `--pg-server` address. `None` (flag absent) disables the endpoint.
+fn parse_pg_addr(pg_server: Option<String>) -> Result<Option<std::net::SocketAddr>, BoxError> {
+    pg_server
+        .map(|s| {
+            s.parse::<std::net::SocketAddr>()
+                .map_err(|e| format!("invalid --pg-server address {s:?}: {e}").into())
+        })
+        .transpose()
 }
 
 async fn load_config(

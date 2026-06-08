@@ -34,10 +34,30 @@ pub async fn new(
     meter: Option<Meter>,
     flight_at: impl Into<Option<SocketAddr>>,
     jsonl_at: impl Into<Option<SocketAddr>>,
+    pg_at: impl Into<Option<SocketAddr>>,
 ) -> Result<(BoundAddrs, impl Future<Output = Result<(), BoxError>>), InitError> {
     // Create the internal service instance
     let service =
         flight::Service::create(config.clone(), metadata_db.clone(), dataset_store, meter).await?;
+
+    // Start the Postgres-wire endpoint if an address is provided. It shares the same query
+    // resources (env, store, metadata DB) as the Flight/JSONL servers. `serve` binds and loops
+    // internally, so there is no pre-bound address to report.
+    let pg_addr = pg_at.into();
+    let pg_fut = match pg_addr {
+        Some(addr) => {
+            let store = service.dataset_store();
+            let metadata_db = service.metadata_db();
+            let env = service.query_env();
+            async move {
+                pgserver::run(store, metadata_db, env, &addr.to_string())
+                    .await
+                    .map_err(|e| Box::new(e) as BoxError)
+            }
+            .boxed()
+        }
+        None => Box::pin(std::future::pending::<Result<(), BoxError>>()) as _,
+    };
 
     // Start Arrow Flight Server if address provided
     let (flight_addr, flight_fut) = match flight_at.into() {
@@ -67,6 +87,7 @@ pub async fn new(
     let addrs = BoundAddrs {
         flight_addr,
         jsonl_addr,
+        pg_addr,
     };
     let fut = async move {
         tokio::select! {
@@ -82,6 +103,12 @@ pub async fn new(
                 }
                 result
             }
+            result = pg_fut => {
+                if let Err(err) = &result {
+                    tracing::error!(error = %err, error_source = logging::error_source(&**err), "Postgres-wire server shutting down due to unexpected error");
+                }
+                result
+            }
         }
     };
 
@@ -92,6 +119,8 @@ pub async fn new(
 pub struct BoundAddrs {
     pub flight_addr: Option<SocketAddr>,
     pub jsonl_addr: Option<SocketAddr>,
+    /// Configured Postgres-wire address (not pre-bound; `pgserver::serve` binds internally).
+    pub pg_addr: Option<SocketAddr>,
 }
 
 /// Create and initialize the Arrow Flight server service
