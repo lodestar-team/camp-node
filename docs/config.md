@@ -55,10 +55,58 @@ Sessions can be configured through the following environment variables:
 
 - `AWS_ACCESS_KEY_ID`: access key ID
 - `AWS_SECRET_ACCESS_KEY`: secret access key
-- `AWS_DEFAULT_REGION`: AWS region
-- `AWS_ENDPOINT`: endpoint
+- `AWS_DEFAULT_REGION` / `AWS_REGION`: region (use `auto` for non-AWS providers)
+- `AWS_ENDPOINT`: endpoint (set this for any non-AWS S3-compatible provider)
 - `AWS_SESSION_TOKEN`: session token
-- `AWS_ALLOW_HTTP`: allow non-TLS connections
+- `AWS_ALLOW_HTTP`: allow non-TLS connections (e.g. a local MinIO over `http://`)
+- `AWS_VIRTUAL_HOSTED_STYLE_REQUEST`: `false` to force path-style addressing (needed by MinIO; fine for R2)
+
+Any S3-compatible store works via `AWS_ENDPOINT` — verified end-to-end against MinIO (write + read +
+list through the same store layer the indexer uses).
+
+#### Cloudflare R2
+
+R2 speaks the S3 API, so it's just an endpoint + credentials. Put the parquet store on R2 instead of
+local disk — useful when you don't want to manage local storage, want to share the data, or want to
+front it with Cloudflare's CDN for fast public reads:
+
+```toml
+# camp.toml
+data_dir      = "s3://my-bucket/amp/"
+providers_dir = "s3://my-bucket/providers/"
+manifests_dir = "s3://my-bucket/manifests/"
+```
+
+```sh
+# R2 credentials are an "S3 API token" from the Cloudflare dashboard
+export AWS_ENDPOINT="https://<ACCOUNT_ID>.r2.cloudflarestorage.com"
+export AWS_ACCESS_KEY_ID="<R2_ACCESS_KEY_ID>"
+export AWS_SECRET_ACCESS_KEY="<R2_SECRET_ACCESS_KEY>"
+export AWS_REGION="auto"
+```
+
+The indexer writes parquet straight to R2 and the query engine reads it back. Reads stay fast because
+parquet footers are cached (in Postgres + an in-process `foyer` cache) and per-column **Bloom filters**
+let the engine fetch only the row groups a query actually touches — so a selective query pulls a few
+ranges from R2, not whole files. For local testing, MinIO works with the same config plus
+`AWS_ENDPOINT=http://localhost:9000`, `AWS_ALLOW_HTTP=true`, and `AWS_VIRTUAL_HOSTED_STYLE_REQUEST=false`.
+
+### Keeping the parquet file count down (compaction)
+
+The RPC extractor writes small parquet files as it follows the chain, which would otherwise pile up.
+camp-node compacts them for you — **the compactor and collector are on by default** (since v0.5.0): the
+compactor merges small files into larger ones and the collector garbage-collects the superseded
+originals. You don't need to compact or reindex by hand. The defaults are equivalent to:
+
+```toml
+[writer.compactor]
+active = true
+[writer.collector]
+active = true
+```
+
+On a pre-v0.5.0 build, set those explicitly. Tuning knobs (`target_size`, compaction interval,
+`eager_compaction_limit`, concurrency) are in `docs/config.sample.toml`.
 
 ### Google Cloud Storage (GCS)
 
