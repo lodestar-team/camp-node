@@ -42,10 +42,12 @@ database. The pipeline is four stages:
    extended with blockchain-specific user-defined functions (decode logs, hash event
    signatures, call contracts at query time).
 3. **Store** — output is written as [Apache Parquet](https://parquet.apache.org/) (columnar,
-   compressed, splittable) on local SSD (or S3/GCS/Azure), with a background **compactor**
-   that merges small files and a **collector** that garbage-collects superseded ones.
-4. **Serve** — query the data over **Arrow Flight** (gRPC, high-throughput binary) or a
-   **JSON Lines HTTP** endpoint (POST raw SQL, get one JSON object per row).
+   compressed, splittable) on local SSD or any object store — S3, GCS, Azure, or **Cloudflare
+   R2** (see [`docs/config.md`](./docs/config.md)) — with a background **compactor** that merges
+   small files and a **collector** that garbage-collects superseded ones.
+4. **Serve** — query the data over **Arrow Flight** (gRPC, high-throughput binary), a
+   **JSON Lines HTTP** endpoint (POST raw SQL, get one JSON object per row), or the
+   **Postgres wire protocol** (psql / Grafana / BI tools; opt-in via `--pg-server`).
 
 A PostgreSQL **metadata database** tracks datasets, manifests, providers, jobs, workers,
 file metadata, and indexing progress, and coordinates distributed workers via
