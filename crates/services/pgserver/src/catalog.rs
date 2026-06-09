@@ -279,3 +279,86 @@ pub async fn refresh_once(
     shared.store(state);
     Ok(count)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    // A trivial SchemaProvider stand-in for the registered-schema (pg_catalog) path.
+    #[derive(Debug)]
+    struct DummySchema;
+
+    #[async_trait]
+    impl SchemaProvider for DummySchema {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn table_names(&self) -> Vec<String> {
+            vec![]
+        }
+        async fn table(&self, _: &str) -> DfResult<Option<Arc<dyn TableProvider>>> {
+            Ok(None)
+        }
+        fn table_exist(&self, _: &str) -> bool {
+            false
+        }
+    }
+
+    // Build a snapshot with the given schema names (each with an empty table map —
+    // enough to exercise the sync catalog logic without constructing TableSnapshots).
+    fn state(schemas: &[&str]) -> CatalogState {
+        let mut s = CatalogState::default();
+        for name in schemas {
+            s.schemas.insert(name.to_string(), BTreeMap::new());
+        }
+        s
+    }
+
+    #[test]
+    fn shared_catalog_publishes_atomically() {
+        let sc = SharedCatalog::new();
+        assert!(sc.load().schemas.is_empty(), "starts empty");
+        sc.store(state(&["_/eth@1.0.0", "_/arbitrum_one@4.0.1"]));
+        let snap = sc.load();
+        assert_eq!(snap.schemas.len(), 2);
+        assert!(snap.schemas.contains_key("_/eth@1.0.0"));
+        // re-publish replaces wholesale
+        sc.store(state(&["_/eth@1.0.0"]));
+        assert_eq!(sc.load().schemas.len(), 1);
+    }
+
+    #[test]
+    fn catalog_resolves_dynamic_schemas_and_rejects_unknown() {
+        let sc = SharedCatalog::new();
+        sc.store(state(&["_/eth@1.0.0"]));
+        let cat = CampCatalog::new(sc);
+        assert!(cat.schema("_/eth@1.0.0").is_some(), "known camp schema resolves");
+        assert!(cat.schema("does_not_exist").is_none(), "unknown schema is None");
+        assert!(cat.schema_names().contains(&"_/eth@1.0.0".to_string()));
+    }
+
+    #[test]
+    fn catalog_register_schema_for_pg_catalog() {
+        let cat = CampCatalog::new(SharedCatalog::new());
+        assert!(cat.schema("pg_catalog").is_none(), "absent before registration");
+        let prev = cat
+            .register_schema("pg_catalog", Arc::new(DummySchema))
+            .expect("register ok");
+        assert!(prev.is_none(), "no previous schema");
+        assert!(cat.schema("pg_catalog").is_some(), "resolves after registration");
+        assert!(cat.schema_names().contains(&"pg_catalog".to_string()));
+    }
+
+    #[tokio::test]
+    async fn schema_provider_reads_from_snapshot() {
+        let sc = SharedCatalog::new();
+        sc.store(state(&["_/eth@1.0.0"]));
+        let cat = CampCatalog::new(sc);
+        let schema = cat.schema("_/eth@1.0.0").expect("schema present");
+        // empty table map for this schema → no tables, but the provider behaves correctly
+        assert!(schema.table_names().is_empty());
+        assert!(!schema.table_exist("blocks"));
+        assert!(schema.table("blocks").await.expect("table() ok").is_none());
+    }
+}

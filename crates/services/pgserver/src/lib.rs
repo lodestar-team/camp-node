@@ -133,3 +133,18 @@ fn split_addr(addr: &str) -> (String, u16) {
         None => (addr.to_string(), 5432),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::split_addr;
+
+    #[test]
+    fn split_addr_parses_host_and_port() {
+        assert_eq!(split_addr("127.0.0.1:5432"), ("127.0.0.1".into(), 5432));
+        assert_eq!(split_addr("0.0.0.0:15432"), ("0.0.0.0".into(), 15432));
+        // missing port → default 5432
+        assert_eq!(split_addr("hostonly"), ("hostonly".into(), 5432));
+        // unparseable port → default 5432
+        assert_eq!(split_addr("h:notaport"), ("h".into(), 5432));
+    }
+}

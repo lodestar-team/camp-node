@@ -649,3 +649,35 @@ impl Addrs {
         })
     }
 }
+
+#[cfg(test)]
+mod hardening_defaults {
+    //! Regression guards for the on-by-default behavior shipped in v0.5.0:
+    //! compactor + collector active, and Parquet Bloom filters enabled. Flipping any
+    //! of these back to off (the upstream defaults) should fail CI here.
+    use super::*;
+
+    #[test]
+    fn compactor_is_on_by_default() {
+        assert!(
+            CompactorConfig::default().active,
+            "compactor must default ON (unbounded file count otherwise)"
+        );
+    }
+
+    #[test]
+    fn collector_is_on_by_default() {
+        assert!(
+            CollectorConfig::default().active,
+            "collector must default ON (GCs files the compactor supersedes)"
+        );
+    }
+
+    #[test]
+    fn bloom_filters_on_by_default() {
+        assert!(
+            default_bloom_filters(),
+            "per-column Bloom filters must default ON (equality-filter pruning)"
+        );
+    }
+}
