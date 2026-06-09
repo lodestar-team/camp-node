@@ -131,6 +131,12 @@ engine's EVM UDFs (e.g. `evm_topic`, `evm_decode_log`) and `pg_catalog`/`informa
 introspection are available, so BI tools can browse the schema natively. The catalog refreshes
 in the background as the chain advances. Writes (DDL/DML) are rejected.
 
+`--pg-server` is **additive** — it layers the Postgres-wire endpoint on top of the default
+servers, it never disables Flight/JSON-Lines/Admin. Connect as user `postgres`, and note that
+schemas are version-qualified (`"_/arbitrum_one@4.0.1"."blocks"`). The endpoint is read-only and
+intended for localhost / trusted networks; making it publicly reachable needs TLS + abuse controls
+— see [`docs/pgwire-exposure.md`](./docs/pgwire-exposure.md).
+
 ### EVM user-defined functions
 
 SQL is extended with blockchain primitives, so decoding happens *inside the query*:
