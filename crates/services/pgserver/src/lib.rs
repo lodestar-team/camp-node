@@ -12,6 +12,9 @@
 
 mod catalog;
 
+#[cfg(test)]
+mod it_refresh;
+
 use std::sync::Arc;
 use std::time::Duration;
 
