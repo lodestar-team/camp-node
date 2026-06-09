@@ -110,13 +110,10 @@ async fn main_inner() -> Result<(), BoxError> {
         } => {
             let pg_at = parse_pg_addr(pg_server)?;
 
-            // If none of the server flags are set, enable the default set (Flight + JSONL + Admin).
-            // The Postgres-wire endpoint stays opt-in.
-            if !flight_server && !jsonl_server && !admin_server && pg_at.is_none() {
-                flight_server = true;
-                jsonl_server = true;
-                admin_server = true;
-            }
+            // Flight + JSONL + Admin auto-enable when none is selected explicitly. pgwire is
+            // additive (opt-in via --pg-server) and never suppresses them.
+            (flight_server, jsonl_server, admin_server) =
+                resolve_default_servers(flight_server, jsonl_server, admin_server);
 
             let config = load_config(config_path.as_ref(), true).await?;
 
@@ -140,11 +137,10 @@ async fn main_inner() -> Result<(), BoxError> {
         } => {
             let pg_at = parse_pg_addr(pg_server)?;
 
-            // If no query-server flags are set, enable Flight + JSONL. Postgres-wire stays opt-in.
-            if !flight_server && !jsonl_server && pg_at.is_none() {
-                flight_server = true;
-                jsonl_server = true;
-            }
+            // Flight + JSONL auto-enable when neither is selected explicitly. pgwire is additive
+            // (opt-in via --pg-server) and never suppresses them. (No Admin in `server` mode.)
+            (flight_server, jsonl_server, _) =
+                resolve_default_servers(flight_server, jsonl_server, false);
 
             let config = load_config(config_path.as_ref(), false).await?;
             let addrs = config.addrs.clone();
@@ -186,6 +182,21 @@ async fn main_inner() -> Result<(), BoxError> {
     }
 }
 
+/// Resolve which of the default servers (Flight / JSON-Lines / Admin) to enable.
+///
+/// Convenience default: if the user enabled *none* of them explicitly, enable all three. Any
+/// explicit selection is honoured verbatim. This is intentionally independent of `--pg-server`:
+/// the Postgres-wire endpoint is additive and must never suppress the default servers (enabling
+/// pgwire on a node that otherwise relies on the default trio is the common case). For the
+/// `server` command (no Admin), pass `admin = false` and ignore the third return value.
+fn resolve_default_servers(flight: bool, jsonl: bool, admin: bool) -> (bool, bool, bool) {
+    if !flight && !jsonl && !admin {
+        (true, true, true)
+    } else {
+        (flight, jsonl, admin)
+    }
+}
+
 /// Parse the optional `--pg-server` address. `None` (flag absent) disables the endpoint.
 fn parse_pg_addr(pg_server: Option<String>) -> Result<Option<std::net::SocketAddr>, BoxError> {
     pg_server
@@ -214,4 +225,41 @@ async fn load_config(
 
     let config = Config::load(config, true, None, allow_temp_db, build_info).await?;
     Ok(config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_pg_addr, resolve_default_servers};
+
+    #[test]
+    fn no_explicit_flags_enables_default_trio() {
+        // The convenience default: a bare `dev`/`server` runs the standard servers.
+        assert_eq!(resolve_default_servers(false, false, false), (true, true, true));
+    }
+
+    #[test]
+    fn explicit_selection_is_honoured_verbatim() {
+        assert_eq!(resolve_default_servers(true, false, false), (true, false, false));
+        assert_eq!(resolve_default_servers(false, true, false), (false, true, false));
+        assert_eq!(resolve_default_servers(false, false, true), (false, false, true));
+        assert_eq!(resolve_default_servers(true, true, false), (true, true, false));
+    }
+
+    #[test]
+    fn pgwire_is_additive_and_never_suppresses_defaults() {
+        // Regression: `--pg-server` must NOT disable Flight/JSONL/Admin. resolve_default_servers
+        // is independent of pgwire, so enabling pgwire alongside a bare command still yields the
+        // full default trio (pgwire is then layered on by the caller via `pg_at`).
+        let pg_at = parse_pg_addr(Some("127.0.0.1:1705".to_string())).expect("valid addr");
+        assert!(pg_at.is_some());
+        // No flight/jsonl/admin flags set → all three still enabled regardless of pgwire.
+        assert_eq!(resolve_default_servers(false, false, false), (true, true, true));
+    }
+
+    #[test]
+    fn parse_pg_addr_handles_absent_and_invalid() {
+        assert!(parse_pg_addr(None).expect("none ok").is_none());
+        assert!(parse_pg_addr(Some("127.0.0.1:5432".into())).expect("valid").is_some());
+        assert!(parse_pg_addr(Some("not-an-addr".into())).is_err());
+    }
 }
