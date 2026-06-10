@@ -392,6 +392,42 @@ impl MetadataDb {
         Ok(())
     }
 
+    /// Schedule files for collection **without** resetting the expiration of any already-scheduled
+    /// file (`ON CONFLICT DO NOTHING`). Use this for periodic reclamation sweeps that re-observe the
+    /// same superseded files every cycle: an `upsert` would perpetually push the deletion lock
+    /// forward so the collector never sees the files expire. Returns the number newly scheduled.
+    pub async fn schedule_gc_manifest(
+        &self,
+        location_id: LocationId,
+        file_ids: &[FileId],
+        duration: Duration,
+    ) -> Result<u64, Error> {
+        let interval = PgInterval {
+            microseconds: (duration.as_micros() as u64) as i64,
+            ..Default::default()
+        };
+
+        let sql = "
+            INSERT INTO gc_manifest (location_id, file_id, file_path, expiration)
+            SELECT $1
+                  , file.id
+                  , file_metadata.file_name
+                  , CURRENT_TIMESTAMP AT TIME ZONE 'UTC' + $3
+               FROM UNNEST ($2) AS file(id)
+         INNER JOIN file_metadata ON file_metadata.id = file.id
+        ON CONFLICT (file_id) DO NOTHING;
+        ";
+        let result = sqlx::query(sql)
+            .bind(location_id)
+            .bind(file_ids.iter().map(|id| **id).collect::<Vec<_>>())
+            .bind(interval)
+            .execute(&*self.pool)
+            .await
+            .map_err(Error::Database)?;
+
+        Ok(result.rows_affected())
+    }
+
     pub fn stream_expired_files<'a>(
         &'a self,
         location_id: LocationId,

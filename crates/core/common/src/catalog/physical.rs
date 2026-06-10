@@ -783,8 +783,11 @@ impl PhysicalTable {
             return Ok(0);
         }
         let ids: Vec<FileId> = reclaimable.iter().map(|s| s.id).collect();
+        // DO NOTHING (not upsert): this sweep re-observes the same superseded files every cycle;
+        // resetting their expiration each time would push the deletion lock forward forever and the
+        // collector would never reap them. Schedule once, let the lock count down.
         self.metadata_db
-            .upsert_gc_manifest(self.location_id, &ids, lock_duration)
+            .schedule_gc_manifest(self.location_id, &ids, lock_duration)
             .await?;
         Ok(ids.len())
     }
