@@ -342,6 +342,41 @@ fn chains(segments: Vec<Segment>) -> Option<Chains> {
     Some(Chains { canonical, fork })
 }
 
+/// Identify segments that are safe to garbage-collect: non-canonical segments whose block range
+/// lies entirely within the contiguous canonical chain, excluding the fork chain reserved for
+/// reorg recovery.
+///
+/// The canonical chain is the authoritative live set queries read, and it is contiguous
+/// (adjacency-built), so any *other* segment lying fully within `[canonical.start, canonical.end]`
+/// is wholly superseded — its blocks are already served by canonical segments — and can be deleted
+/// without data loss. Segments extending past the canonical tip (potential fork tips) are kept.
+///
+/// This closes the unbounded file-growth leak: [`chains`] silently *drops* overlapping/duplicate
+/// segments (compaction repeatedly emits a longer canonical segment from the same start block,
+/// orphaning every shorter predecessor), so they linger in object storage and `file_metadata`
+/// forever because nothing ever schedules them for collection.
+pub fn reclaimable_segments(segments: Vec<Segment>) -> Vec<Segment> {
+    let Some(Chains { canonical, fork }) = chains(segments.clone()) else {
+        return Vec::new();
+    };
+    let canonical_start = canonical.start();
+    let canonical_end = canonical.end();
+
+    // Never reclaim anything that is part of the live canonical chain or the reorg fork.
+    let mut retained: std::collections::BTreeSet<FileId> =
+        canonical.0.iter().map(|s| s.id).collect();
+    if let Some(fork) = &fork {
+        retained.extend(fork.0.iter().map(|s| s.id));
+    }
+
+    segments
+        .into_iter()
+        .filter(|s| !retained.contains(&s.id))
+        // Fully covered by the (contiguous) canonical range ⇒ provably redundant ⇒ safe to delete.
+        .filter(|s| s.range.start() >= canonical_start && s.range.end() <= canonical_end)
+        .collect()
+}
+
 fn missing_block_ranges(
     synced: RangeInclusive<BlockNum>,
     desired: RangeInclusive<BlockNum>,
@@ -430,6 +465,69 @@ mod test {
             object,
             id: FileId::try_from(1i64).expect("FileId::MIN is 1"),
         }
+    }
+
+    /// Like `test_segment` but with a caller-chosen file id (real segments have distinct ids;
+    /// `reclaimable_segments` identifies superseded files by id).
+    fn seg(numbers: RangeInclusive<BlockNum>, ts: i64, id: i64) -> Segment {
+        let mut s = test_segment(numbers, (0, 0), ts);
+        s.id = FileId::try_from(id).expect("valid id");
+        s
+    }
+
+    fn ids(mut segs: Vec<Segment>) -> Vec<i64> {
+        segs.sort_by_key(|s| (s.range.start(), s.range.end(), *s.id));
+        segs.into_iter().map(|s| *s.id).collect()
+    }
+
+    #[test]
+    fn reclaimable_identifies_superseded_predecessors() {
+        // The leak shape: compaction re-emits a longer segment from the same start block, so we
+        // have [0..=2], [0..=5], [0..=9] (growing end). Only [0..=9] is canonical; the two
+        // shorter predecessors are fully covered and must be reclaimed.
+        let segs = vec![
+            seg(0..=2, 1, 10),
+            seg(0..=5, 2, 11),
+            seg(0..=9, 3, 12),
+        ];
+        let reclaim = super::reclaimable_segments(segs);
+        assert_eq!(ids(reclaim), vec![10, 11], "shorter predecessors are reclaimed");
+    }
+
+    #[test]
+    fn reclaimable_handles_exact_duplicates() {
+        // Two files with the identical range (the 27k-duplicate case): keep one, reclaim the other.
+        let segs = vec![seg(0..=9, 1, 20), seg(0..=9, 2, 21)];
+        let reclaim = super::reclaimable_segments(segs);
+        assert_eq!(reclaim.len(), 1, "exactly one duplicate reclaimed");
+    }
+
+    #[test]
+    fn reclaimable_keeps_clean_contiguous_chain() {
+        // A healthy non-overlapping contiguous chain has nothing to reclaim.
+        let segs = vec![seg(0..=2, 1, 30), seg(3..=5, 1, 31), seg(6..=9, 1, 32)];
+        assert!(super::reclaimable_segments(segs).is_empty());
+    }
+
+    #[test]
+    fn reclaimable_keeps_segments_past_the_canonical_tip() {
+        // A segment extending beyond the canonical tip (a potential fork tip) must NOT be reclaimed
+        // even though it overlaps the canonical range — deleting it could lose tip/fork data.
+        let segs = vec![
+            seg(0..=5, 1, 40),  // canonical
+            seg(3..=8, 2, 41),  // overlaps canonical but extends past end ⇒ keep
+        ];
+        let reclaim = super::reclaimable_segments(segs);
+        assert!(
+            reclaim.is_empty(),
+            "segment past the canonical tip is preserved, got {:?}",
+            ids(reclaim)
+        );
+    }
+
+    #[test]
+    fn reclaimable_empty_for_no_segments() {
+        assert!(super::reclaimable_segments(vec![]).is_empty());
     }
 
     #[test]
