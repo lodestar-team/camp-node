@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, ops::RangeInclusive, sync::Arc};
+use std::{collections::BTreeMap, ops::RangeInclusive, sync::Arc, time::Duration};
 
 use datafusion::{
     arrow::datatypes::SchemaRef,
@@ -21,7 +21,7 @@ use datasets_common::{
     hash::Hash, hash_reference::HashReference, name::Name, table_name::TableName,
 };
 use futures::{Stream, StreamExt, TryStreamExt, stream};
-use metadata_db::{LocationId, MetadataDb};
+use metadata_db::{FileId, LocationId, MetadataDb};
 use object_store::{ObjectMeta, ObjectStore, path::Path};
 use tracing::{debug, warn};
 use url::Url;
@@ -33,7 +33,9 @@ use crate::{
     metadata::{
         FileMetadata, amp_metadata_from_parquet_file,
         parquet::ParquetMeta,
-        segments::{BlockRange, Chain, Segment, canonical_chain, missing_ranges},
+        segments::{
+            BlockRange, Chain, Segment, canonical_chain, missing_ranges, reclaimable_segments,
+        },
     },
     sql::TableReference,
     store::Store,
@@ -761,6 +763,30 @@ impl PhysicalTable {
             })
             .try_collect()
             .await
+    }
+
+    /// Schedule provably-redundant superseded segments for garbage collection.
+    ///
+    /// Loads all physical segments, identifies those fully covered by (and outside of) the
+    /// canonical chain via [`reclaimable_segments`], and registers them in the GC manifest with the
+    /// given deletion-lock duration. The collector then deletes them once the lock expires. Returns
+    /// the number of files scheduled.
+    ///
+    /// This is what bounds file growth: compaction supersedes files by emitting a longer canonical
+    /// segment from the same start block, but the shorter predecessors are otherwise never
+    /// scheduled for collection, so they accumulate in object storage + `file_metadata` forever.
+    #[tracing::instrument(skip_all, err, fields(table = %self.table_ref_compact()))]
+    pub async fn reclaim_superseded(&self, lock_duration: Duration) -> Result<usize, BoxError> {
+        let segments = self.segments().await?;
+        let reclaimable = reclaimable_segments(segments);
+        if reclaimable.is_empty() {
+            return Ok(0);
+        }
+        let ids: Vec<FileId> = reclaimable.iter().map(|s| s.id).collect();
+        self.metadata_db
+            .upsert_gc_manifest(self.location_id, &ids, lock_duration)
+            .await?;
+        Ok(ids.len())
     }
 
     /// A snapshot binds this physical table to the currently canonical chain.

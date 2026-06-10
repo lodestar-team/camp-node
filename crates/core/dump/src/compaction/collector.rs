@@ -71,6 +71,20 @@ impl Collector {
 
         let location_id = self.table.location_id();
 
+        // Before reaping already-expired files, schedule any superseded-but-unreclaimed segments
+        // (overlapping/duplicate files the canonical chain dropped — compaction's orphaned
+        // predecessors). Without this they accumulate in object storage forever. Failures here are
+        // non-fatal: log and fall through to the normal collection pass.
+        match self
+            .table
+            .reclaim_superseded(self.props.collector.file_lock_duration)
+            .await
+        {
+            Ok(0) => {}
+            Ok(n) => tracing::debug!("Scheduled {n} superseded files for collection"),
+            Err(e) => tracing::warn!("reclaim_superseded failed: {e}"),
+        }
+
         let found_file_ids_to_paths: BTreeMap<FileId, Path> = self
             .metadata_db
             .stream_expired_files(location_id)
