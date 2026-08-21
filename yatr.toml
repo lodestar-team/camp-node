@@ -1,0 +1,54 @@
+# yatr - https://github.com/cargopete/yatr
+#
+# Task names are the same across every nightswatchhq repo, so `yatr ci` means
+# the same thing wherever you are. Note that `ci` is deliberately not called
+# `check`: `yatr check` is a builtin that validates this file, and it shadows
+# any task of that name without warning.
+
+# Two toolchains in one tree: a cargo workspace and a pnpm workspace. The
+# justfile stays the place for the long tail; these are the tasks used daily.
+
+[env]
+RUST_BACKTRACE = "1"
+
+[settings]
+cache = true
+
+[tasks.fmt]
+desc = "Format Rust and TypeScript"
+run = ["cargo fmt --all", "pnpm run format"]
+no_cache = true
+
+[tasks.fmt-check]
+desc = "Fail if the Rust tree is unformatted"
+run = ["cargo fmt --all -- --check"]
+sources = ["**/*.rs", "rustfmt.toml"]
+
+[tasks.lint]
+desc = "Clippy and eslint"
+parallel = true
+run = [
+    "cargo clippy --workspace --all-targets -- -D warnings",
+    "pnpm run lint",
+]
+sources = ["**/*.rs", "**/*.ts", "**/Cargo.toml", "Cargo.lock"]
+
+[tasks.test]
+desc = "Rust and TypeScript test suites"
+run = ["cargo test --workspace", "pnpm run test"]
+sources = ["**/*.rs", "**/*.ts", "Cargo.lock"]
+
+[tasks.build]
+desc = "Release build, both toolchains"
+run = ["cargo build --workspace --release", "pnpm run build"]
+sources = ["**/*.rs", "**/*.ts", "Cargo.lock"]
+
+[tasks.types]
+desc = "TypeScript project-wide typecheck"
+run = ["pnpm run check"]
+sources = ["**/*.ts", "tsconfig.json"]
+
+[tasks.ci]
+desc = "What CI runs: fmt-check, lint, types, test"
+depends = ["fmt-check", "lint", "types", "test"]
+run = []
